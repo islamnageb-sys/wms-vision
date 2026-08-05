@@ -352,12 +352,17 @@ function updateTracker(blobs, CW, CH) {
     }
   });
 
-  // Remove stale
+  // Remove stale — log exit
   Object.keys(objects).forEach(id => {
-    if (now - objects[id].lastSeen > CFG.maxAgeMs) delete objects[id];
+    const obj = objects[id];
+    if (now - obj.lastSeen > CFG.maxAgeMs) {
+      const dur = Math.round((obj.lastSeen - (obj.enteredAt||obj.lastSeen)) / 1000);
+      addLog(`🔴 Object #${obj.id} left — visible ${dur}s`);
+      delete objects[id];
+    }
   });
 
-  // Add new blobs
+  // Add new blobs — log entry
   blobs.forEach((b, i) => {
     if (usedBlobs.has(i)) return;
     const id = nextObjId++;
@@ -365,8 +370,9 @@ function updateTracker(blobs, CW, CH) {
       id, box: b, cx: b.cx, cy: b.cy,
       trail: [{x: b.cx*CW, y: b.cy*CH}],
       color: COLORS[(id-1) % COLORS.length],
-      lastSeen: now, active: true,
+      lastSeen: now, enteredAt: now, active: true,
     };
+    addLog(`🟢 Object #${id} detected`);
   });
 
   // Draw all active objects

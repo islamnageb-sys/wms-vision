@@ -121,11 +121,22 @@
       <input type="range" id="minSize" min="100" max="5000" value="500" oninput="updateMinSize(this.value)">
       <span class="val" id="minSizeVal">500</span>
     </div>
+    <!-- Frame delay -->
+    <div class="row">
+      <label>Frame delay</label>
+      <input type="range" id="frameDelay" min="2" max="30" value="8" oninput="FRAME_DELAY=+this.value;frameBuffer=[];document.getElementById('fdVal').textContent=this.value">
+      <span class="val" id="fdVal">8</span>
+    </div>
     <!-- Trail length -->
     <div class="row">
       <label>Trail</label>
       <input type="range" id="trailLen" min="0" max="60" value="25" oninput="TRAIL_MAX=+this.value;document.getElementById('trailVal').textContent=this.value">
       <span class="val" id="trailVal">25</span>
+    </div>
+    <!-- Debug toggle -->
+    <div class="row">
+      <button class="btn btn-gray btn-sm" onclick="showDebug=!showDebug;this.textContent=showDebug?'🔴 Debug ON':'👁 Motion Debug'">👁 Motion Debug</button>
+      <span style="font-size:11px;color:#64748b">يلوّن الحركة باللون الأحمر عشان تشوف إيه الـ sensitivity المناسب</span>
     </div>
 
     <!-- Zone -->
@@ -148,13 +159,15 @@
 
 <script>
 // ── Config ─────────────────────────────────────────────────
-let MOTION_THRESH = 25;   // pixel difference threshold
-let MIN_PIXELS    = 500;  // min cell pixels to count as motion region
+let MOTION_THRESH = 12;   // pixel difference threshold (lower = more sensitive)
+let MIN_PIXELS    = 80;   // min pixels to count as motion region
 let TRAIL_MAX     = 25;   // trail length in frames
-const CELL        = 12;   // grid cell size in pixels (processing)
-const PROC_SCALE  = 0.4;  // process at 40% resolution for speed
-const MAX_AGE_MS  = 1200; // ms before removing unmatched object
-const MATCH_DIST  = 0.2;  // max normalized distance for matching
+let FRAME_DELAY   = 8;    // compare with frame N frames ago (key for far distance!)
+const CELL        = 8;    // grid cell size — smaller = more detail
+const PROC_SCALE  = 0.6;  // process at 60% resolution
+const MAX_AGE_MS  = 1500;
+const MATCH_DIST  = 0.25;
+let   showDebug   = false; // show raw motion mask
 
 const OBJ_COLORS = [
   '#22c55e','#3b82f6','#f59e0b','#a855f7',
@@ -162,10 +175,11 @@ const OBJ_COLORS = [
 ];
 
 // ── State ──────────────────────────────────────────────────
-let stream    = null;
-let animId    = null;
-let prevData  = null;
-let tracker   = new Tracker();
+let stream      = null;
+let animId      = null;
+let prevData    = null;
+let frameBuffer = [];   // stores past frames for delayed comparison
+let tracker     = new Tracker();
 let peakCount = 0;
 let alertCount= 0;
 let facingMode= 'environment';
@@ -248,7 +262,11 @@ function detectMotion() {
   const PW = proc.width, PH = proc.height;
   pCtx.drawImage(video, 0, 0, PW, PH);
   const curr = pCtx.getImageData(0, 0, PW, PH).data;
-  if (!prevData) { prevData = curr.slice(); return []; }
+
+  // Frame buffer: compare with FRAME_DELAY frames ago
+  frameBuffer.push(new Uint8ClampedArray(curr));
+  if (frameBuffer.length < FRAME_DELAY) return [];
+  prevData = frameBuffer.shift();
 
   // Grid-based motion map
   const GW = Math.ceil(PW/CELL), GH = Math.ceil(PH/CELL);
@@ -334,6 +352,26 @@ function loop() {
 
   // Motion detection
   const boxes   = detectMotion();
+
+  // Debug: show raw motion mask
+  if (showDebug && frameBuffer.length >= FRAME_DELAY) {
+    const PW=proc.width, PH=proc.height;
+    const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const scX=canvas.width/PW, scY=canvas.height/PH;
+    const curr=pCtx.getImageData(0,0,PW,PH).data;
+    const prev=frameBuffer[0];
+    for(let py=0;py<PH;py++) for(let px=0;px<PW;px++){
+      const i=(py*PW+px)*4;
+      const d=Math.abs(curr[i]-prev[i])+Math.abs(curr[i+1]-prev[i+1])+Math.abs(curr[i+2]-prev[i+2]);
+      if(d>MOTION_THRESH){
+        const cx=Math.round(px*scX), cy=Math.round(py*scY);
+        const ci=(cy*canvas.width+cx)*4;
+        imgData.data[ci]=255;imgData.data[ci+1]=50;imgData.data[ci+2]=50;imgData.data[ci+3]=180;
+      }
+    }
+    ctx.putImageData(imgData,0,0);
+  }
+
   const objects = tracker.update(boxes);
 
   // Draw zone
@@ -524,7 +562,7 @@ function stopCam() {
 function updateSensitivity(v){
   MOTION_THRESH=+v;
   document.getElementById('sensVal').textContent=v;
-  prevData=null; // reset after threshold change
+  frameBuffer=[]; // reset buffer after change
 }
 function updateMinSize(v){
   MIN_PIXELS=+v;

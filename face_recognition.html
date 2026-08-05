@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WMS — Body + Face Tracking v3</title>
+
+  <!--
+    ARCHITECTURE (no conflicts):
+    • face-api.js  → bundles its own TF.js 1.7 internally  → face recognition
+    • MediaPipe Pose → pure WASM, zero TF.js dependency     → body skeleton
+    NO standalone @tensorflow/tfjs loaded here on purpose.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0f172a;color:#f1f5f9;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center}
+    header{width:100%;background:#1e293b;padding:14px 24px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #334155}
+    header h1{font-size:18px;font-weight:700}
+    header small{font-size:12px;color:#94a3b8}
+    .main{width:100%;max-width:980px;padding:14px;display:flex;flex-direction:column;gap:12px}
+
+    .status-bar{display:flex;align-items:center;gap:10px;background:#1e293b;border-radius:12px;padding:12px 18px}
+    .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;background:#64748b}
+    .dot.loading{background:#f59e0b;animation:pulse 1s infinite}
+    .dot.ready{background:#22c55e}
+    .dot.error{background:#ef4444}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+    #statusText{font-size:13px;color:#94a3b8;flex:1}
+    .load-pills{display:flex;gap:8px;flex-wrap:wrap}
+    .pill{font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid #334155;color:#64748b}
+    .pill.done{border-color:#22c55e;color:#22c55e;background:rgba(34,197,94,.08)}
+    .pill.loading{border-color:#f59e0b;color:#f59e0b;animation:pulse 1s infinite}
+    .pill.err{border-color:#ef4444;color:#ef4444}
+
+    #alertBanner{display:none;width:100%;background:#7f1d1d;border:1px solid #ef4444;border-radius:12px;padding:14px 18px;font-size:15px;font-weight:700;color:#fca5a5;animation:flash .6s infinite}
+    @keyframes flash{0%,100%{opacity:1}50%{opacity:.6}}
+
+    .tabs{display:flex;gap:8px;background:#1e293b;border-radius:12px;padding:6px}
+    .tab{flex:1;padding:10px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:#64748b;transition:.2s}
+    .tab.active{background:#3b82f6;color:#fff}
+
+    .layout{display:flex;gap:12px}
+    .cam-col{flex:1;display:flex;flex-direction:column;gap:10px}
+    .side-col{width:240px;display:flex;flex-direction:column;gap:10px}
+
+    .camera-wrap{position:relative;border-radius:14px;overflow:hidden;background:#000;border:2px solid #334155}
+    #video{width:100%;display:block}
+    #canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+    #faceGuide{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:180px;height:220px;border:3px dashed #3b82f6;border-radius:50%;pointer-events:none;display:none;animation:guidePulse 2s infinite}
+    @keyframes guidePulse{0%,100%{border-color:#3b82f6}50%{border-color:#60a5fa}}
+
+    .panel{background:#1e293b;border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px}
+    .panel h3{font-size:13px;color:#94a3b8}
+    input[type=text]{width:100%;padding:10px 12px;border-radius:8px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;font-size:14px;outline:none}
+    input[type=text]:focus{border-color:#3b82f6}
+
+    .steps{display:flex;gap:6px;justify-content:center}
+    .step{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:2px solid #334155;background:#0f172a;transition:.3s}
+    .step.active{border-color:#3b82f6;background:#1e3a5f;animation:stepPulse 1s infinite}
+    .step.done{border-color:#22c55e;background:#14532d}
+    @keyframes stepPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+    #stepInstruction{text-align:center;font-size:14px;font-weight:600;color:#60a5fa}
+    #captureProgress{height:6px;background:#334155;border-radius:4px;overflow:hidden}
+    #captureProgressBar{height:100%;background:#3b82f6;transition:width .3s}
+
+    .btn{padding:10px 16px;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;width:100%;transition:.2s}
+    .btn:disabled{opacity:.4;cursor:not-allowed}
+    .btn-green{background:#22c55e;color:#fff}
+    .btn-blue{background:#3b82f6;color:#fff}
+    .btn-red{background:#ef4444;color:#fff}
+    .btn-gray{background:#334155;color:#f1f5f9}
+
+    .counters{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .card{background:#1e293b;border-radius:12px;padding:12px;text-align:center;border:1px solid #334155}
+    .card .num{font-size:28px;font-weight:800}
+    .card .lbl{font-size:10px;color:#64748b;margin-top:3px;text-transform:uppercase}
+    .green{color:#22c55e}.red{color:#ef4444}.blue{color:#60a5fa}.orange{color:#f97316}
+
+    .toggles{display:flex;gap:8px;flex-wrap:wrap}
+    .toggle-btn{padding:6px 12px;border:1px solid #334155;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#64748b;transition:.2s}
+    .toggle-btn.on{background:#1e3a5f;border-color:#3b82f6;color:#60a5fa}
+
+    .people-panel{background:#1e293b;border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+    .panel-hdr{padding:10px 14px;font-size:12px;color:#94a3b8;border-bottom:1px solid #334155;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center}
+    .person-row{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid #1a2332}
+    .avatar{width:34px;height:34px;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#94a3b8;flex-shrink:0}
+    .person-info{flex:1}
+    .person-name{font-size:13px;font-weight:600}
+    .person-sub{font-size:11px;color:#64748b}
+    .btn-del{background:none;border:none;color:#ef4444;cursor:pointer;font-size:15px;padding:4px}
+
+    .log-row{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 14px;font-size:11px;border-bottom:1px solid #1a2332}
+    .log-row.entry{border-left:3px solid #22c55e}
+    .log-row.exit{border-left:3px solid #64748b}
+    .log-row.unknown{border-left:3px solid #ef4444;color:#fca5a5}
+    .log-time{color:#475569;flex-shrink:0}
+
+    .session-row{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid #1a2332;font-size:12px}
+    .sdot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;animation:pulse 2s infinite}
+
+    @media(max-width:640px){.layout{flex-direction:column}.side-col{width:100%}}
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+    <rect width="28" height="28" rx="8" fill="#3b82f6"/>
+    <circle cx="14" cy="7" r="3" fill="white"/>
+    <line x1="14" y1="10" x2="14" y2="19" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="8"  y1="13" x2="20" y2="13" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="14" y1="19" x2="9"  y2="25" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="14" y1="19" x2="19" y2="25" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <h1>WMS Body + Face Tracking v3</h1>
+    <small>MediaPipe Skeleton · Face Identity · Entry/Exit</small>
+  </div>
+</header>
+
+<div class="main">
+
+  <div class="status-bar">
+    <div class="dot loading" id="dot"></div>
+    <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+      <span id="statusText">Loading models...</span>
+      <div class="load-pills">
+        <span class="pill loading" id="pillFace">👤 Face model</span>
+        <span class="pill loading" id="pillPose">🦴 Pose model</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="alertBanner">⚠️ UNKNOWN PERSON DETECTED — Not registered in the system!</div>
+
+  <div class="tabs">
+    <button class="tab active" id="tabReg" onclick="switchMode('register')">👤 Register</button>
+    <button class="tab"        id="tabDet" onclick="switchMode('detect')">🔍 Detection</button>
+    <button class="tab"        id="tabLog" onclick="switchMode('log')">📋 Shift Log</button>
+  </div>
+
+  <div class="layout">
+    <div class="cam-col">
+
+      <div class="camera-wrap" id="camWrap">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="canvas"></canvas>
+        <div id="faceGuide"></div>
+      </div>
+
+      <!-- REGISTER panel -->
+      <div class="panel" id="panelRegister">
+        <h3>Register worker — 5 angle photos for best accuracy</h3>
+        <input type="text" id="workerName" placeholder="Full name"/>
+        <input type="text" id="workerCode" placeholder="Worker code (e.g. W001)"/>
+        <div class="steps" id="stepsRow">
+          <div class="step active" id="step0" title="Straight">😐</div>
+          <div class="step"        id="step1" title="Left">⬅️</div>
+          <div class="step"        id="step2" title="Right">➡️</div>
+          <div class="step"        id="step3" title="Up">⬆️</div>
+          <div class="step"        id="step4" title="Smile">😊</div>
+        </div>
+        <div id="stepInstruction">Look straight at the camera</div>
+        <div id="captureProgress"><div id="captureProgressBar" style="width:0%"></div></div>
+        <button class="btn btn-blue" id="btnCapture" onclick="captureStep()" disabled>📸 Capture (0/5)</button>
+        <select id="camSelectReg" onchange="changeCam(this.value)"
+          style="width:100%;padding:9px 12px;border-radius:8px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;font-size:13px;outline:none">
+          <option value="">📷 Default camera</option>
+        </select>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-gray" style="flex:1" onclick="scanCameras()">🔍 Scan</button>
+          <button class="btn btn-blue" style="flex:2" id="btnCamReg" onclick="startCamera()">▶ Start Camera</button>
+        </div>
+        <button class="btn btn-gray" onclick="resetCapture()">↺ Reset</button>
+      </div>
+
+      <!-- DETECT panel -->
+      <div class="panel" id="panelDetect" style="display:none">
+        <div class="counters">
+          <div class="card"><div class="num green"  id="numKnown">0</div><div class="lbl">Known</div></div>
+          <div class="card"><div class="num red"    id="numUnknown">0</div><div class="lbl">Unknown</div></div>
+          <div class="card"><div class="num orange" id="numPose">—</div><div class="lbl">Skeleton</div></div>
+        </div>
+        <div class="toggles">
+          <button class="toggle-btn on" id="togSkeleton" onclick="toggleOvr('skeleton')">🦴 Skeleton</button>
+          <button class="toggle-btn on" id="togFace"     onclick="toggleOvr('face')">👤 Face ID</button>
+          <button class="toggle-btn on" id="togPoints"   onclick="toggleOvr('points')">📍 Points</button>
+        </div>
+        <select id="camSelectDet" onchange="changeCam(this.value)"
+          style="width:100%;padding:9px 12px;border-radius:8px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;font-size:13px;outline:none">
+          <option value="">📷 Default camera</option>
+        </select>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-gray"  style="flex:1" onclick="scanCameras()">🔍 Scan</button>
+          <button class="btn btn-green" style="flex:2" onclick="startCamera()">▶ Start</button>
+          <button class="btn btn-red"   style="flex:1" onclick="stopCamera()">⏹</button>
+        </div>
+      </div>
+
+      <!-- LOG panel -->
+      <div class="panel" id="panelLog" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h3>Today's Shift Log</h3>
+          <button class="btn btn-gray" style="width:auto;padding:6px 12px;font-size:11px" onclick="clearLog()">Clear</button>
+        </div>
+        <div id="shiftLogList" style="max-height:420px;overflow-y:auto"></div>
+      </div>
+
+    </div>
+
+    <!-- SIDEBAR -->
+    <div class="side-col">
+      <div class="people-panel">
+        <div class="panel-hdr">
+          <span>🟢 Active Now</span>
+          <span id="activeCount" style="color:#22c55e;font-weight:700">0</span>
+        </div>
+        <div id="activeList" style="max-height:180px;overflow-y:auto">
+          <div style="padding:14px;font-size:12px;color:#475569;text-align:center">No one detected</div>
+        </div>
+      </div>
+      <div class="people-panel">
+        <div class="panel-hdr">
+          <span>Registered Workers</span>
+          <span id="countBadge" style="color:#60a5fa;font-weight:700">0</span>
+        </div>
+        <div id="peopleList" style="max-height:280px;overflow-y:auto"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Config ─────────────────────────────────────────────────
+const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
+const FACE_THRESHOLD = 0.62;
+const EXIT_TIMEOUT   = 12000;
+
+const STEPS = [
+  {emoji:'😐', text:'Look straight at the camera'},
+  {emoji:'⬅️', text:'Turn slightly to your LEFT'},
+  {emoji:'➡️', text:'Turn slightly to your RIGHT'},
+  {emoji:'⬆️', text:'Tilt head slightly UP'},
+  {emoji:'😊', text:'Natural smile — look at camera'},
+];
+
+// MediaPipe Pose connections (33 landmarks, normalized 0-1)
+const MP_CONNECTIONS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],   // shoulders + arms
+  [15,17],[15,19],[15,21],[17,19],            // left hand
+  [16,18],[16,20],[16,22],[18,20],            // right hand
+  [11,23],[12,24],[23,24],                    // torso sides
+  [23,25],[25,27],[27,29],[27,31],[29,31],    // left leg
+  [24,26],[26,28],[28,30],[28,32],[30,32],    // right leg
+];
+// Face landmarks subset (head lines)
+const MP_FACE = [[0,1],[1,2],[2,3],[3,7],[0,4],[4,5],[5,6],[6,8],[9,10]];
+
+const overlays = { skeleton:true, face:true, points:true };
+
+// ── State ──────────────────────────────────────────────────
+let faceReady      = false;
+let poseReady      = false;
+let stream         = null;
+let detectIntvl    = null;
+let poseIntvl      = null;
+let exitIntvl      = null;
+let mode           = 'register';
+let currentStep    = 0;
+let capturedDesc   = [];
+let registeredFaces  = [];
+let activeSessions   = {};
+let shiftLog         = [];
+let lastAlertTime    = 0;
+let lastFaceRun      = 0;
+let cachedFaceResult = [];
+let mpPoseLandmarks  = null;
+let capturing        = false;
+let mpPose           = null;
+let selectedCamId    = null;        // selected camera device
+let pocketTimers     = {L:0,R:0};  // pocket detection timers
+let lastPocketAlert  = 0;
+
+const POCKET_ZONE = 0.13;  // normalized radius around hip = "pocket area"
+
+const video  = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+// ── Load face-api models ────────────────────────────────────
+async function loadFaceModels() {
+  try {
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_MODEL_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL),
+    ]);
+    faceReady = true;
+    document.getElementById('pillFace').className = 'pill done';
+    document.getElementById('pillFace').textContent = '✓ Face model';
+    document.getElementById('btnCapture').disabled = false;
+  } catch(e) {
+    document.getElementById('pillFace').className = 'pill err';
+    document.getElementById('pillFace').textContent = '✗ Face failed';
+    console.error('Face model error:', e);
+  }
+}
+
+// ── Load MediaPipe Pose ─────────────────────────────────────
+function loadPoseModel() {
+  return new Promise((resolve) => {
+    try {
+      mpPose = new Pose({
+        locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${f}`
+      });
+      mpPose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        minDetectionConfidence: 0.45,
+        minTrackingConfidence: 0.45,
+      });
+      mpPose.onResults(results => {
+        mpPoseLandmarks = results.poseLandmarks || null;
+      });
+      mpPose.initialize().then(() => {
+        poseReady = true;
+        document.getElementById('pillPose').className = 'pill done';
+        document.getElementById('pillPose').textContent = '✓ Pose model';
+        resolve();
+      }).catch(e => {
+        document.getElementById('pillPose').className = 'pill err';
+        document.getElementById('pillPose').textContent = '⚠ Pose unavail';
+        console.warn('Pose model failed (face still works):', e);
+        resolve(); // don't block face-only mode
+      });
+    } catch(e) {
+      document.getElementById('pillPose').className = 'pill err';
+      document.getElementById('pillPose').textContent = '⚠ Pose unavail';
+      resolve();
+    }
+  });
+}
+
+// Init
+setStatus('loading','Loading models...');
+(async () => {
+  await Promise.all([loadFaceModels(), loadPoseModel()]);
+  if (faceReady) {
+    setStatus('ready', poseReady ? 'All models ready!' : 'Face ready (pose unavail — face detection still works)');
+  } else {
+    setStatus('error','Face model failed. Check internet and refresh.');
+  }
+})();
+loadData();
+
+// ── Mode switch ────────────────────────────────────────────
+function switchMode(m) {
+  mode = m; stopCamera();
+  document.getElementById('panelRegister').style.display = m==='register'?'flex':'none';
+  document.getElementById('panelDetect').style.display   = m==='detect'  ?'flex':'none';
+  document.getElementById('panelLog').style.display      = m==='log'     ?'flex':'none';
+  document.getElementById('tabReg').classList.toggle('active', m==='register');
+  document.getElementById('tabDet').classList.toggle('active', m==='detect');
+  document.getElementById('tabLog').classList.toggle('active', m==='log');
+  document.getElementById('camWrap').style.display  = m==='log'?'none':'block';
+  document.getElementById('faceGuide').style.display= m==='register'?'block':'none';
+  if (m==='log') renderShiftLog();
+}
+
+function toggleOvr(key) {
+  overlays[key]=!overlays[key];
+  const id='tog'+key.charAt(0).toUpperCase()+key.slice(1);
+  document.getElementById(id).classList.toggle('on',overlays[key]);
+}
+
+// ── Camera selector ────────────────────────────────────────
+async function scanCameras() {
+  // Request permission first so labels appear
+  try { const tmp=await navigator.mediaDevices.getUserMedia({video:true}); tmp.getTracks().forEach(t=>t.stop()); } catch(e){}
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d=>d.kind==='videoinput');
+  ['camSelectReg','camSelectDet'].forEach(id=>{
+    const sel=document.getElementById(id);
+    if(!sel)return;
+    sel.innerHTML=`<option value="">📷 Default camera</option>`
+      + cams.map((c,i)=>`<option value="${c.deviceId}">${c.label||'Camera '+(i+1)}</option>`).join('');
+    if(selectedCamId)sel.value=selectedCamId;
+  });
+  setStatus('ready',`Found ${cams.length} camera(s). Select then Start.`);
+}
+function changeCam(id){ selectedCamId=id||null; }
+
+// ── Camera start ───────────────────────────────────────────
+async function startCamera() {
+  if (stream) stopCamera();
+  try {
+    const constraints = {
+      video: selectedCamId
+        ? {deviceId:{exact:selectedCamId},width:{ideal:1280},height:{ideal:720}}
+        : {width:{ideal:1280},height:{ideal:720}},
+      audio:false
+    };
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject=stream; await video.play();
+    canvas.width=video.videoWidth||640; canvas.height=video.videoHeight||480;
+    if (mode==='detect') startDetectLoop();
+    setStatus('ready', mode==='register'?STEPS[currentStep].text:'Detecting...');
+  } catch(e) { setStatus('error','Camera access denied: '+e.message); }
+}
+
+function stopCamera() {
+  clearInterval(detectIntvl); detectIntvl=null;
+  clearInterval(poseIntvl);   poseIntvl=null;
+  clearInterval(exitIntvl);   exitIntvl=null;
+  stream?.getTracks().forEach(t=>t.stop()); stream=null;
+  mpPoseLandmarks=null;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  hideAlert();
+}
+
+// ── Register: capture step ─────────────────────────────────
+async function captureStep() {
+  if (!faceReady)  { alert('Face model not loaded yet.'); return; }
+  if (!stream)     { alert('Start camera first!'); return; }
+  if (capturing)   return;
+  const name = document.getElementById('workerName').value.trim();
+  const code = document.getElementById('workerCode').value.trim();
+  if (!name||!code){ alert('Enter name and code first!'); return; }
+
+  capturing=true;
+  document.getElementById('btnCapture').disabled=true;
+  setStatus('loading',`Detecting face for step ${currentStep+1}/5...`);
+
+  let det=null;
+  try {
+    det = await faceapi
+      .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({scoreThreshold:0.25,inputSize:320}))
+      .withFaceLandmarks(true).withFaceDescriptor();
+  } catch(e){ console.error(e); }
+
+  capturing=false;
+  document.getElementById('btnCapture').disabled=false;
+
+  if (!det) {
+    setStatus('error','No face detected! Move closer, face the camera squarely.');
+    setTimeout(()=>setStatus('ready',STEPS[currentStep].text), 2500);
+    return;
+  }
+
+  // Flash green box
+  canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+  const b=det.detection.box;
+  ctx.strokeStyle='#22c55e'; ctx.lineWidth=3; ctx.strokeRect(b.x,b.y,b.width,b.height);
+  ctx.fillStyle='#22c55e'; ctx.fillRect(b.x,b.y-30,b.width,30);
+  ctx.fillStyle='#fff'; ctx.font='bold 14px Segoe UI';
+  ctx.fillText(`✓ Step ${currentStep+1} captured!`,b.x+6,b.y-10);
+  setTimeout(()=>ctx.clearRect(0,0,canvas.width,canvas.height),900);
+
+  capturedDesc.push(det.descriptor);
+  document.getElementById(`step${currentStep}`).className='step done';
+  currentStep++;
+
+  if (currentStep < STEPS.length) {
+    document.getElementById(`step${currentStep}`).className='step active';
+    document.getElementById('stepInstruction').textContent=STEPS[currentStep].text;
+    document.getElementById('captureProgressBar').style.width=(currentStep/5*100)+'%';
+    document.getElementById('btnCapture').textContent=`📸 Capture (${currentStep}/5)`;
+    setStatus('ready',STEPS[currentStep].text);
+  } else {
+    document.getElementById('captureProgressBar').style.width='100%';
+    document.getElementById('btnCapture').disabled=true;
+    const ex=registeredFaces.find(f=>f.code===code);
+    if (ex){ ex.descriptors.push(...capturedDesc); ex.name=name; }
+    else registeredFaces.push({name,code,descriptors:[...capturedDesc]});
+    saveData(); renderPeopleList();
+    addShiftLog(`✅ Registered: ${name} (${code})`, 'entry');
+    setStatus('ready',`✅ ${name} (${code}) registered successfully!`);
+    document.getElementById('workerName').value='';
+    document.getElementById('workerCode').value='';
+    setTimeout(resetCapture, 1500);
+  }
+}
+
+function resetCapture(){
+  currentStep=0; capturedDesc=[];
+  STEPS.forEach((_,i)=>{ document.getElementById(`step${i}`).className=i===0?'step active':'step'; });
+  document.getElementById('stepInstruction').textContent=STEPS[0].text;
+  document.getElementById('captureProgressBar').style.width='0%';
+  document.getElementById('btnCapture').textContent='📸 Capture (0/5)';
+  document.getElementById('btnCapture').disabled=!faceReady;
+  setStatus('ready',STEPS[0].text);
+}
+
+// ── Detection loop ─────────────────────────────────────────
+function startDetectLoop() {
+  clearInterval(detectIntvl); clearInterval(poseIntvl); clearInterval(exitIntvl);
+
+  // Face: every 1.5s (heavy)
+  detectIntvl = setInterval(runFaceDetection, 1500);
+  runFaceDetection(); // immediate first run
+
+  // Pose: every 120ms (smooth skeleton)
+  if (poseReady) {
+    poseIntvl = setInterval(runPoseAndDraw, 120);
+    runPoseAndDraw();
+  } else {
+    // If pose not available, still draw face results
+    poseIntvl = setInterval(drawFrameOnly, 120);
+  }
+
+  exitIntvl = setInterval(checkExits, 3000);
+}
+
+// Face detection (slow, cached)
+async function runFaceDetection() {
+  if (!stream||!video.videoWidth||!faceReady) return;
+  try {
+    const dets = await faceapi
+      .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({scoreThreshold:0.3,inputSize:320}))
+      .withFaceLandmarks(true).withFaceDescriptors();
+    cachedFaceResult = dets;
+
+    // Update sessions
+    if (dets.length>0 && registeredFaces.length>0) {
+      const labeled = registeredFaces.map(f=>
+        new faceapi.LabeledFaceDescriptors(`${f.name}||${f.code}`, f.descriptors));
+      const matcher = new faceapi.FaceMatcher(labeled, FACE_THRESHOLD);
+      const now = Date.now();
+      dets.forEach(det=>{
+        const match=matcher.findBestMatch(det.descriptor);
+        if (match.label!=='unknown') {
+          const [name,code]=match.label.split('||');
+          if (!activeSessions[code]) {
+            activeSessions[code]={name,code,enteredAt:now,lastSeen:now};
+            addShiftLog(`🟢 Entry: ${name} (${code})`,'entry');
+            renderActiveSessions();
+          } else { activeSessions[code].lastSeen=now; }
+        }
+      });
+    }
+
+    // Unknown alert — only fire if ALL faces are unknown (not when briefly losing a known face)
+    const knownLabels = registeredFaces.length>0
+      ? new faceapi.FaceMatcher(registeredFaces.map(f=>
+          new faceapi.LabeledFaceDescriptors(`${f.name}||${f.code}`,f.descriptors)),FACE_THRESHOLD)
+      : null;
+    const unknowns = knownLabels
+      ? dets.filter(d=>knownLabels.findBestMatch(d.descriptor).label==='unknown').length
+      : dets.length;
+    const known = dets.length - unknowns;
+    document.getElementById('numKnown').textContent   = known;
+    document.getElementById('numUnknown').textContent = unknowns;
+    const now=Date.now();
+    // Only alert if unknown AND no known person in same frame AND 15s cooldown
+    if (unknowns>0 && known===0 && now-lastAlertTime>15000) {
+      lastAlertTime=now; showAlert(); addShiftLog(`⚠️ ${unknowns} UNKNOWN person(s) detected!`,'unknown');
+    } else if (unknowns===0 || known>0) hideAlert();
+  } catch(e){ console.warn('Face detect err:',e); }
+}
+
+// Pose + draw (fast)
+async function runPoseAndDraw() {
+  if (!stream||!video.videoWidth) return;
+  try { await mpPose.send({image:video}); } catch(e){}
+  drawFrame();
+}
+
+function drawFrameOnly() {
+  if (!stream||!video.videoWidth) return;
+  drawFrame();
+}
+
+function drawFrame() {
+  canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // 1. MediaPipe skeleton
+  if (mpPoseLandmarks && overlays.skeleton) {
+    drawMPSkeleton(mpPoseLandmarks);
+  }
+  document.getElementById('numPose').textContent = mpPoseLandmarks ? 'ON' : (poseReady?'—':'✗');
+
+  // 2. Pocket detection overlay
+  if (mpPoseLandmarks) checkPockets(mpPoseLandmarks);
+
+  // 3. Face boxes + labels
+  if (overlays.face && cachedFaceResult.length>0) {
+    drawFaceResults(cachedFaceResult);
+  }
+}
+
+// ── Pocket detection ───────────────────────────────────────
+function checkPockets(lm) {
+  const w=canvas.width, h=canvas.height;
+  const now=Date.now();
+  const pairs=[
+    {wrist:lm[15], hip:lm[23], side:'L'},  // left wrist + left hip
+    {wrist:lm[16], hip:lm[24], side:'R'},  // right wrist + right hip
+  ];
+  pairs.forEach(({wrist,hip,side})=>{
+    if (!wrist||!hip||wrist.visibility<0.45||hip.visibility<0.45) {
+      pocketTimers[side]=0; return;
+    }
+    const dx=Math.abs(wrist.x-hip.x);
+    const dy=Math.abs(wrist.y-hip.y);
+    const inZone = dx<POCKET_ZONE && dy<POCKET_ZONE;
+
+    // Draw pocket zone ring
+    const hx=hip.x*w, hy=hip.y*h, r=POCKET_ZONE*w*0.9;
+    ctx.setLineDash([5,4]);
+    ctx.strokeStyle = inZone ? 'rgba(245,158,11,.7)' : 'rgba(148,163,184,.15)';
+    ctx.lineWidth   = inZone ? 2 : 1;
+    ctx.beginPath(); ctx.arc(hx,hy,r,0,Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (inZone) {
+      if (!pocketTimers[side]) pocketTimers[side]=now;
+      const elapsed = now-pocketTimers[side];
+      const pct = Math.min(elapsed/2000, 1);
+
+      // Progress arc (fills as hand stays)
+      ctx.strokeStyle='rgba(245,158,11,.9)'; ctx.lineWidth=3; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(hx,hy,r,-Math.PI/2,-Math.PI/2+pct*Math.PI*2); ctx.stroke();
+
+      if (elapsed > 2000) {
+        // ⚠ POCKET ALERT
+        ctx.fillStyle='rgba(239,68,68,.18)';
+        ctx.beginPath(); ctx.arc(hx,hy,r,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#ef4444'; ctx.font='bold 14px Segoe UI';
+        const lbl=`⚠ POCKET ${side==='L'?'LEFT':'RIGHT'}`;
+        ctx.fillText(lbl, hx-ctx.measureText(lbl).width/2, hy-r-10);
+        if (now-lastPocketAlert>10000) {
+          lastPocketAlert=now;
+          addShiftLog(`🚨 Hand in pocket zone — ${side==='L'?'Left':'Right'} side!`,'unknown');
+        }
+      }
+    } else {
+      pocketTimers[side]=0;
+    }
+  });
+}
+
+// ── Draw MediaPipe skeleton ─────────────────────────────────
+function drawMPSkeleton(lm) {
+  const w=canvas.width, h=canvas.height;
+
+  // Body connections
+  ctx.lineWidth=2.5; ctx.setLineDash([]);
+  MP_CONNECTIONS.forEach(([a,b])=>{
+    const la=lm[a], lb=lm[b];
+    if (!la||!lb||la.visibility<0.3||lb.visibility<0.3) return;
+    // Color by body region: arms=blue, torso=green, legs=orange
+    const isArm  = (a>=11&&a<=22)||(b>=11&&b<=22);
+    const isLeg  = (a>=23)||(b>=23);
+    ctx.strokeStyle = isLeg?'rgba(249,115,22,.9)' : isArm?'rgba(96,165,250,.9)' : 'rgba(34,197,94,.9)';
+    ctx.beginPath(); ctx.moveTo(la.x*w,la.y*h); ctx.lineTo(lb.x*w,lb.y*h); ctx.stroke();
+  });
+
+  // Face outline (dimmer)
+  if (overlays.skeleton) {
+    ctx.strokeStyle='rgba(148,163,184,.5)'; ctx.lineWidth=1.5;
+    MP_FACE.forEach(([a,b])=>{
+      const la=lm[a], lb=lm[b];
+      if (!la||!lb||la.visibility<0.3||lb.visibility<0.3) return;
+      ctx.beginPath(); ctx.moveTo(la.x*w,la.y*h); ctx.lineTo(lb.x*w,lb.y*h); ctx.stroke();
+    });
+  }
+
+  // Keypoints
+  if (overlays.points) {
+    lm.forEach((p,i)=>{
+      if (!p||p.visibility<0.3) return;
+      const isKey=[0,11,12,13,14,15,16,23,24,25,26,27,28].includes(i);
+      ctx.fillStyle=p.visibility>0.7?'#22c55e':'rgba(34,197,94,.5)';
+      ctx.beginPath(); ctx.arc(p.x*w,p.y*h,isKey?5:3,0,Math.PI*2); ctx.fill();
+    });
+  }
+}
+
+// ── Draw face boxes ─────────────────────────────────────────
+function drawFaceResults(dets) {
+  let matcher=null;
+  if (registeredFaces.length>0) {
+    const labeled=registeredFaces.map(f=>
+      new faceapi.LabeledFaceDescriptors(`${f.name}||${f.code}`,f.descriptors));
+    matcher=new faceapi.FaceMatcher(labeled,FACE_THRESHOLD);
+  }
+  dets.forEach(det=>{
+    const box=det.detection.box;
+    let label='UNKNOWN', isKnown=false;
+    if (matcher) {
+      const m=matcher.findBestMatch(det.descriptor);
+      if (m.label!=='unknown') {
+        const [name,code]=m.label.split('||');
+        label=`${name}  ${code}  ${Math.round((1-m.distance)*100)}%`;
+        isKnown=true;
+      } else {
+        // Show distance for debugging — helps tune threshold
+        label=`UNKNOWN  dist:${m.distance.toFixed(2)}`;
+      }
+    }
+    const color=isKnown?'#22c55e':'#ef4444';
+    ctx.strokeStyle=color; ctx.lineWidth=2; ctx.strokeRect(box.x,box.y,box.width,box.height);
+    ctx.fillStyle=isKnown?'rgba(34,197,94,.08)':'rgba(239,68,68,.1)';
+    ctx.fillRect(box.x,box.y,box.width,box.height);
+    const lblW=Math.min(ctx.measureText(label).width+16, box.width+60);
+    ctx.fillStyle=color; ctx.fillRect(box.x,box.y-28,lblW,28);
+    ctx.fillStyle='#fff'; ctx.font='bold 13px Segoe UI';
+    ctx.fillText(label,box.x+6,box.y-10);
+  });
+}
+
+// ── Session management ──────────────────────────────────────
+function checkExits() {
+  const now=Date.now();
+  Object.keys(activeSessions).forEach(code=>{
+    const s=activeSessions[code];
+    if (now-s.lastSeen>EXIT_TIMEOUT) {
+      addShiftLog(`🔴 Exit: ${s.name} (${code}) — ${formatDur(s.lastSeen-s.enteredAt)}`,'exit');
+      delete activeSessions[code]; renderActiveSessions();
+    }
+  });
+}
+
+function renderActiveSessions() {
+  const list=document.getElementById('activeList');
+  const keys=Object.keys(activeSessions);
+  document.getElementById('activeCount').textContent=keys.length;
+  if (!keys.length){
+    list.innerHTML='<div style="padding:14px;font-size:12px;color:#475569;text-align:center">No one active</div>';return;
+  }
+  const now=Date.now();
+  list.innerHTML=keys.map(code=>{
+    const s=activeSessions[code];
+    return `<div class="session-row">
+      <div class="sdot"></div>
+      <div style="flex:1"><div style="font-size:13px;font-weight:600">${s.name}</div>
+      <div style="font-size:11px;color:#64748b">${s.code} · ${new Date(s.enteredAt).toLocaleTimeString()}</div></div>
+      <div style="font-size:12px;color:#60a5fa;font-weight:700">${formatDur(now-s.enteredAt)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Shift log ──────────────────────────────────────────────
+function addShiftLog(msg,type){
+  shiftLog.unshift({msg,type,time:new Date().toLocaleTimeString()});
+  if(shiftLog.length>200)shiftLog.pop(); saveData();
+  if(mode==='log')renderShiftLog();
+}
+function renderShiftLog(){
+  const el=document.getElementById('shiftLogList');
+  if(!shiftLog.length){el.innerHTML='<div style="padding:14px;font-size:12px;color:#475569;text-align:center">No events yet</div>';return;}
+  el.innerHTML=shiftLog.map(e=>`<div class="log-row ${e.type}"><span>${e.msg}</span><span class="log-time">${e.time}</span></div>`).join('');
+}
+function clearLog(){if(!confirm('Clear all?'))return;shiftLog=[];saveData();renderShiftLog();}
+
+// ── People list ────────────────────────────────────────────
+function renderPeopleList(){
+  const list=document.getElementById('peopleList');
+  document.getElementById('countBadge').textContent=registeredFaces.length;
+  if(!registeredFaces.length){list.innerHTML='<div style="padding:14px;font-size:12px;color:#475569;text-align:center">No workers yet</div>';return;}
+  list.innerHTML=registeredFaces.map((f,i)=>`
+    <div class="person-row">
+      <div class="avatar">${f.name.charAt(0).toUpperCase()}</div>
+      <div class="person-info">
+        <div class="person-name">${f.name}</div>
+        <div class="person-sub">${f.code} · 📸 ${f.descriptors.length} photos</div>
+      </div>
+      <button class="btn-del" onclick="deletePerson(${i})">✕</button>
+    </div>`).join('');
+}
+function deletePerson(i){if(!confirm(`Delete ${registeredFaces[i].name}?`))return;registeredFaces.splice(i,1);saveData();renderPeopleList();}
+
+// ── Storage (with v2 migration) ────────────────────────────
+function saveData(){
+  localStorage.setItem('wms_faces_v3',JSON.stringify(
+    registeredFaces.map(f=>({name:f.name,code:f.code,descriptors:f.descriptors.map(d=>Array.from(d))}))));
+  localStorage.setItem('wms_log_v3',JSON.stringify(shiftLog.slice(0,100)));
+}
+function loadData(){
+  try{
+    let raw=localStorage.getItem('wms_faces_v3')||localStorage.getItem('wms_faces_v2');
+    if(raw){
+      registeredFaces=JSON.parse(raw).map(x=>({
+        name:x.name,code:x.code,descriptors:x.descriptors.map(d=>new Float32Array(d))}));
+      if(!localStorage.getItem('wms_faces_v3'))saveData();
+      renderPeopleList();
+    }
+    const l=localStorage.getItem('wms_log_v3')||localStorage.getItem('wms_shiftlog');
+    if(l)shiftLog=JSON.parse(l);
+  }catch(e){registeredFaces=[];shiftLog=[];}
+}
+
+// ── Helpers ────────────────────────────────────────────────
+function formatDur(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);if(h>0)return`${h}h ${m%60}m`;if(m>0)return`${m}m ${s%60}s`;return`${s}s`;}
+function showAlert(){document.getElementById('alertBanner').style.display='block';setTimeout(hideAlert,6000);}
+function hideAlert(){document.getElementById('alertBanner').style.display='none';}
+function setStatus(t,m){document.getElementById('dot').className=`dot ${t}`;document.getElementById('statusText').textContent=m;}
+</script>
+</body>
+</html>

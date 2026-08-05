@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>People Counter — WMS Vision</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0f172a;
+      color: #f1f5f9;
+      font-family: 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      background: #1e293b;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid #334155;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+
+    header span {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      padding: 20px;
+      width: 100%;
+      max-width: 900px;
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 12px 18px;
+    }
+
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+      flex-shrink: 0;
+    }
+    .dot.loading { background: #f59e0b; animation: pulse 1s infinite; }
+    .dot.ready   { background: #22c55e; }
+    .dot.error   { background: #ef4444; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    #statusText { font-size: 13px; color: #94a3b8; }
+
+    /* ── Counter cards ── */
+    .counters {
+      width: 100%;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      background: #1e293b;
+      border-radius: 14px;
+      padding: 18px;
+      text-align: center;
+      border: 1px solid #334155;
+    }
+
+    .card .num {
+      font-size: 42px;
+      font-weight: 800;
+      line-height: 1;
+      color: #22c55e;
+    }
+
+    .card .num.orange { color: #f97316; }
+    .card .num.blue   { color: #60a5fa; }
+
+    .card .label {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Camera area ── */
+    .camera-wrap {
+      position: relative;
+      width: 100%;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #000;
+      border: 2px solid #334155;
+    }
+
+    #video {
+      width: 100%;
+      display: block;
+    }
+
+    #canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    button {
+      padding: 10px 22px;
+      border-radius: 10px;
+      border: none;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btnStart  { background: #22c55e; color: #fff; }
+    #btnStop   { background: #ef4444; color: #fff; }
+    #btnSwitch { background: #3b82f6; color: #fff; }
+
+    /* ── History log ── */
+    .history {
+      width: 100%;
+      background: #1e293b;
+      border-radius: 14px;
+      border: 1px solid #334155;
+      overflow: hidden;
+    }
+
+    .history h3 {
+      padding: 12px 18px;
+      font-size: 13px;
+      color: #94a3b8;
+      border-bottom: 1px solid #334155;
+    }
+
+    #log {
+      max-height: 160px;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .log-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 18px;
+      font-size: 12px;
+      color: #cbd5e1;
+      border-bottom: 1px solid #1e293b;
+    }
+
+    .log-row:last-child { border-bottom: none; }
+    .log-row .count { color: #22c55e; font-weight: 700; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+    <rect width="28" height="28" rx="8" fill="#22c55e"/>
+    <circle cx="14" cy="10" r="4" fill="white"/>
+    <path d="M6 22c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <h1>People Counter</h1>
+    <span>WMS Vision — Real-time Detection</span>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- Status -->
+  <div class="status-bar">
+    <div class="dot loading" id="dot"></div>
+    <span id="statusText">Loading AI model...</span>
+  </div>
+
+  <!-- Counters -->
+  <div class="counters">
+    <div class="card">
+      <div class="num" id="numCurrent">0</div>
+      <div class="label">Now in frame</div>
+    </div>
+    <div class="card">
+      <div class="num orange" id="numMax">0</div>
+      <div class="label">Peak count</div>
+    </div>
+    <div class="card">
+      <div class="num blue" id="numFps">0</div>
+      <div class="label">FPS</div>
+    </div>
+  </div>
+
+  <!-- Camera -->
+  <div class="camera-wrap">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button id="btnStart">▶ Start Camera</button>
+    <button id="btnStop" disabled>⏹ Stop</button>
+    <button id="btnSwitch" disabled>🔄 Switch Camera</button>
+  </div>
+
+  <!-- Log -->
+  <div class="history">
+    <h3>Detection Log</h3>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+  // ── Elements ─────────────────────────────────────────────
+  const video     = document.getElementById('video');
+  const canvas    = document.getElementById('canvas');
+  const ctx       = canvas.getContext('2d');
+  const dot       = document.getElementById('dot');
+  const statusTxt = document.getElementById('statusText');
+  const numCurrent= document.getElementById('numCurrent');
+  const numMax    = document.getElementById('numMax');
+  const numFps    = document.getElementById('numFps');
+  const log       = document.getElementById('log');
+  const btnStart  = document.getElementById('btnStart');
+  const btnStop   = document.getElementById('btnStop');
+  const btnSwitch = document.getElementById('btnSwitch');
+
+  // ── State ─────────────────────────────────────────────────
+  let model       = null;
+  let stream      = null;
+  let animId      = null;
+  let maxCount    = 0;
+  let facingMode  = 'user';          // front cam default
+  let lastTime    = performance.now();
+  let frameCount  = 0;
+  let lastLogCount= -1;
+  let lastLogTime = 0;
+
+  // ── Load model ────────────────────────────────────────────
+  (async () => {
+    try {
+      setStatus('loading', 'Loading AI model (first time takes ~10 sec)...');
+      model = await cocoSsd.load({ base: 'mobilenet_v2' });
+      setStatus('ready', 'Model ready — press Start Camera');
+      btnStart.disabled = false;
+    } catch (e) {
+      setStatus('error', 'Model failed to load. Check internet connection.');
+    }
+  })();
+
+  // ── Start camera ──────────────────────────────────────────
+  btnStart.onclick = async () => {
+    try {
+      setStatus('loading', 'Requesting camera...');
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      btnStart.disabled  = true;
+      btnStop.disabled   = false;
+      btnSwitch.disabled = false;
+      setStatus('ready', 'Detecting people...');
+      detect();
+    } catch (e) {
+      setStatus('error', 'Camera access denied. Allow camera in browser.');
+    }
+  };
+
+  // ── Stop ──────────────────────────────────────────────────
+  btnStop.onclick = () => {
+    cancelAnimationFrame(animId);
+    stream?.getTracks().forEach(t => t.stop());
+    stream = null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    btnStart.disabled  = false;
+    btnStop.disabled   = true;
+    btnSwitch.disabled = true;
+    setStatus('ready', 'Stopped — press Start Camera');
+  };
+
+  // ── Switch camera (mobile) ────────────────────────────────
+  btnSwitch.onclick = async () => {
+    facingMode = facingMode === 'user' ? 'environment' : 'user';
+    btnStop.onclick();
+    setTimeout(() => btnStart.onclick(), 300);
+  };
+
+  // ── Detection loop ────────────────────────────────────────
+  async function detect() {
+    if (!model || !stream) return;
+
+    const predictions = await model.detect(video);
+
+    // Filter persons only
+    const persons = predictions.filter(p => p.class === 'person' && p.score > 0.25);
+    const count   = persons.length;
+
+    // Update counters
+    numCurrent.textContent = count;
+    if (count > maxCount) { maxCount = count; numMax.textContent = maxCount; }
+
+    // FPS
+    frameCount++;
+    const now = performance.now();
+    if (now - lastTime >= 1000) {
+      numFps.textContent = frameCount;
+      frameCount = 0;
+      lastTime   = now;
+    }
+
+    // Draw
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    persons.forEach((p, i) => {
+      const [x, y, w, h] = p.bbox;
+      const conf = Math.round(p.score * 100);
+
+      // Box
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth   = 3;
+      ctx.strokeRect(x, y, w, h);
+
+      // Fill top label bar
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(x, y - 28, w, 28);
+
+      // Label text
+      ctx.fillStyle = '#fff';
+      ctx.font      = 'bold 15px Segoe UI';
+      ctx.fillText(`Person ${i + 1}  ${conf}%`, x + 6, y - 8);
+
+      // Subtle fill
+      ctx.fillStyle = 'rgba(34,197,94,0.08)';
+      ctx.fillRect(x, y, w, h);
+    });
+
+    // Count badge (top-right)
+    ctx.fillStyle = 'rgba(15,23,42,0.75)';
+    roundRect(ctx, canvas.width - 140, 12, 128, 44, 10);
+    ctx.fill();
+    ctx.fillStyle = '#22c55e';
+    ctx.font      = 'bold 26px Segoe UI';
+    ctx.fillText(`👥 ${count}`, canvas.width - 128, 46);
+
+    // Log every 5 sec if count changed
+    if (count !== lastLogCount && now - lastLogTime > 5000) {
+      addLog(count);
+      lastLogCount = count;
+      lastLogTime  = now;
+    }
+
+    animId = requestAnimationFrame(detect);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────
+  function setStatus(type, msg) {
+    dot.className = `dot ${type}`;
+    statusTxt.textContent = msg;
+  }
+
+  function addLog(count) {
+    const now  = new Date();
+    const time = now.toLocaleTimeString();
+    const row  = document.createElement('div');
+    row.className = 'log-row';
+    row.innerHTML = `<span>${time}</span><span class="count">${count} person${count !== 1 ? 's' : ''}</span>`;
+    log.prepend(row);
+    if (log.children.length > 50) log.lastChild.remove();
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WMS — Body + Face Tracking v3</title>
+  <title>WMS — Body + Face Tracking v4</title>
 
   <!--
     ARCHITECTURE (no conflicts):
@@ -117,8 +117,8 @@
     <line x1="14" y1="19" x2="19" y2="25" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
   </svg>
   <div>
-    <h1>WMS Body + Face Tracking v3</h1>
-    <small>MediaPipe Skeleton · Face Identity · Entry/Exit</small>
+    <h1>WMS Body + Face Tracking v4</h1>
+    <small>MediaPipe Skeleton · Face Identity · Lift Counter · PPE Check</small>
   </div>
 </header>
 
@@ -184,6 +184,21 @@
           <div class="card"><div class="num green"  id="numKnown">0</div><div class="lbl">Known</div></div>
           <div class="card"><div class="num red"    id="numUnknown">0</div><div class="lbl">Unknown</div></div>
           <div class="card"><div class="num orange" id="numPose">—</div><div class="lbl">Skeleton</div></div>
+        </div>
+        <!-- Row 2: Lift counter + PPE -->
+        <div class="counters">
+          <div class="card">
+            <div class="num" id="liftCountNum" style="color:#f59e0b">0</div>
+            <div class="lbl">📦 Lifts</div>
+          </div>
+          <div class="card">
+            <div style="font-size:22px;font-weight:800;line-height:1.2;margin-bottom:3px" id="helmetStatus">—</div>
+            <div class="lbl">🪖 Helmet</div>
+          </div>
+          <div class="card">
+            <div style="font-size:22px;font-weight:800;line-height:1.2;margin-bottom:3px" id="vestStatus">—</div>
+            <div class="lbl">🦺 Vest</div>
+          </div>
         </div>
         <div class="toggles">
           <button class="toggle-btn on" id="togSkeleton" onclick="toggleOvr('skeleton')">🦴 Skeleton</button>
@@ -288,6 +303,18 @@ let pocketTimers     = {L:0,R:0};  // pocket detection timers
 let lastPocketAlert  = 0;
 
 const POCKET_ZONE = 0.13;  // normalized radius around hip = "pocket area"
+
+// ── Lift counter ────────────────────────────────────────────
+let liftState    = 'idle';  // 'idle' | 'raised'
+let liftCount    = 0;
+let liftRaisedAt = 0;
+let lastLiftLogged = 0;
+
+// ── PPE detection ───────────────────────────────────────────
+const ppeStatus  = { helmet: null, vest: null };  // null=scanning, true=ok, false=missing
+let lastPPECheck = 0;
+let lastPPEAlert = 0;
+let offCtx       = null;   // offscreen canvas context for pixel sampling
 
 const video  = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -416,7 +443,14 @@ async function startCamera() {
     stream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject=stream; await video.play();
     canvas.width=video.videoWidth||640; canvas.height=video.videoHeight||480;
-    if (mode==='detect') startDetectLoop();
+    if (mode==='detect') {
+      // Reset session counters on each new camera start
+      liftCount=0; liftState='idle';
+      ppeStatus.helmet=null; ppeStatus.vest=null;
+      const lc=document.getElementById('liftCountNum'); if(lc) lc.textContent='0';
+      updatePPEDisplay();
+      startDetectLoop();
+    }
     setStatus('ready', mode==='register'?STEPS[currentStep].text:'Detecting...');
   } catch(e) { setStatus('error','Camera access denied: '+e.message); }
 }
@@ -596,7 +630,14 @@ function drawFrame() {
   // 2. Pocket detection overlay
   if (mpPoseLandmarks) checkPockets(mpPoseLandmarks);
 
-  // 3. Face boxes + labels
+  // 3. Lift counter + PPE
+  if (mpPoseLandmarks) {
+    detectLift(mpPoseLandmarks);
+    checkPPE(mpPoseLandmarks);
+  }
+  drawPPECorner();
+
+  // 4. Face boxes + labels
   if (overlays.face && cachedFaceResult.length>0) {
     drawFaceResults(cachedFaceResult);
   }
@@ -650,6 +691,189 @@ function checkPockets(lm) {
     } else {
       pocketTimers[side]=0;
     }
+  });
+}
+
+// ── Lift counter ───────────────────────────────────────────
+function detectLift(lm) {
+  const lw=lm[15], rw=lm[16];   // wrists
+  const ls=lm[11], rs=lm[12];   // shoulders
+  const lh=lm[23], rh=lm[24];   // hips
+
+  if (!ls||!rs||!lh||!rh) return;
+  const visL=lw?lw.visibility:0, visR=rw?rw.visibility:0;
+  if (visL<0.35 && visR<0.35) return;  // neither wrist visible
+
+  // Use both wrists if visible, else whichever is more visible
+  let avgWristY;
+  if (visL>0.35 && visR>0.35) avgWristY=(lw.y+rw.y)/2;
+  else avgWristY=(visL>visR ? lw : rw).y;
+
+  const shoulderY=(ls.y+rs.y)/2;
+  const hipY=(lh.y+rh.y)/2;
+
+  // Raised = wrists at or above shoulder level (lifting/placing a box)
+  const raised = avgWristY < shoulderY + 0.08;
+  // Low = wrists below hips (arms at rest / picking from floor)
+  const low    = avgWristY > hipY - 0.05;
+
+  const now=Date.now();
+
+  if (liftState==='idle' && raised) {
+    liftState='raised'; liftRaisedAt=now;
+  }
+  if (liftState==='raised') {
+    // Draw lifting badge above shoulders
+    _drawBadge(((ls.x+rs.x)/2)*canvas.width, ((ls.y+rs.y)/2)*canvas.height - 50,
+               '📦 LIFTING...', '#f59e0b');
+    if (low && now-liftRaisedAt>350 && now-lastLiftLogged>1500) {
+      // Arms came back down → count the lift
+      liftCount++; lastLiftLogged=now;
+      const el=document.getElementById('liftCountNum');
+      if(el) el.textContent=liftCount;
+      addShiftLog(`📦 Lift #${liftCount} detected`, 'entry');
+      liftState='idle';
+    }
+  }
+}
+
+function _drawBadge(cx, cy, text, color) {
+  ctx.font='bold 14px Segoe UI';
+  const tw=ctx.measureText(text).width;
+  const px=8, py=5;
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  const rx=cx-tw/2-px, ry=cy-20;
+  _roundRect(rx, ry, tw+px*2, 26, 6);
+  ctx.fill();
+  ctx.fillStyle=color;
+  ctx.fillText(text, cx-tw/2, cy-4);
+}
+
+function _roundRect(x,y,w,h,r) {
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
+  else {
+    ctx.beginPath();
+    ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r);
+    ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+    ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+    ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r);
+    ctx.closePath();
+  }
+}
+
+// ── PPE check (helmet + safety vest, color-based) ──────────
+function rgbToHsv(r,g,b) {
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+  let h=0, s=max===0?0:d/max, v=max;
+  if(d!==0){switch(max){
+    case r: h=((g-b)/d+(g<b?6:0))/6; break;
+    case g: h=((b-r)/d+2)/6; break;
+    case b: h=((r-g)/d+4)/6; break;
+  }}
+  return {h:h*360,s,v};
+}
+
+function isSafetyColor(r,g,b) {
+  const {h,s,v}=rgbToHsv(r,g,b);
+  return (h>=40&&h<=68&&s>0.5&&v>0.4)    // safety yellow
+      || (h>=10&&h<=40&&s>0.55&&v>0.4)   // orange
+      || (h>=68&&h<=140&&s>0.55&&v>0.35) // hi-vis green
+      || (s<0.14&&v>0.88)                // white hard hat
+      || (h>=195&&h<=248&&s>0.4&&v>0.28) // blue hard hat
+      || ((h<10||h>345)&&s>0.5&&v>0.35); // red hard hat
+}
+
+function _sampleRatio(data,W,H,rx,ry,rw,rh) {
+  let hits=0,total=0;
+  const x0=Math.max(0,Math.round(rx)), y0=Math.max(0,Math.round(ry));
+  const x1=Math.min(W,Math.round(rx+rw)), y1=Math.min(H,Math.round(ry+rh));
+  for(let y=y0;y<y1;y+=2) for(let x=x0;x<x1;x+=2){
+    const i=(y*W+x)*4;
+    if(isSafetyColor(data[i],data[i+1],data[i+2])) hits++;
+    total++;
+  }
+  return total>0?hits/total:0;
+}
+
+function checkPPE(lm) {
+  const now=Date.now();
+  if(now-lastPPECheck<2000) return;  // run every 2s
+  lastPPECheck=now;
+  if(!video.videoWidth||!stream) return;
+
+  // Render video frame to offscreen canvas (gives us actual pixel colors)
+  if(!offCtx){
+    const oc=document.createElement('canvas');
+    offCtx=oc.getContext('2d');
+  }
+  offCtx.canvas.width=video.videoWidth;
+  offCtx.canvas.height=video.videoHeight;
+  offCtx.drawImage(video,0,0);
+  let data;
+  try{ data=offCtx.getImageData(0,0,offCtx.canvas.width,offCtx.canvas.height).data; }
+  catch(e){ return; }  // security error (file:// on some browsers)
+  const W=offCtx.canvas.width, H=offCtx.canvas.height;
+
+  const nose=lm[0], ls=lm[11], rs=lm[12], lh=lm[23], rh=lm[24];
+
+  // ── Helmet: region above nose ──
+  if(nose&&ls&&rs&&nose.visibility>0.5){
+    const nx=nose.x*W, ny=nose.y*H;
+    const sY=((ls.y+rs.y)/2)*H;
+    const headH=Math.max(40,(sY-ny)*1.0);
+    const headW=Math.max(40,Math.abs(ls.x-rs.x)*W*0.75);
+    const ratio=_sampleRatio(data,W,H, nx-headW/2, ny-headH*1.1, headW, headH);
+    ppeStatus.helmet = ratio > 0.15;
+  }
+
+  // ── Vest: torso between shoulder base and hip top ──
+  if(ls&&rs&&lh&&rh&&ls.visibility>0.45){
+    const x1=Math.min(ls.x,rs.x)*W, x2=Math.max(ls.x,rs.x)*W;
+    const y1=Math.max(ls.y,rs.y)*H, y2=Math.min(lh.y,rh.y)*H;
+    if(y2>y1+20){
+      const ratio=_sampleRatio(data,W,H, x1, y1, x2-x1, y2-y1);
+      ppeStatus.vest = ratio > 0.28;
+    }
+  }
+
+  // PPE violation → log once every 30s
+  if(ppeStatus.helmet===false||ppeStatus.vest===false){
+    const issues=[];
+    if(ppeStatus.helmet===false) issues.push('no helmet');
+    if(ppeStatus.vest===false)   issues.push('no safety vest');
+    if(now-lastPPEAlert>30000){
+      lastPPEAlert=now;
+      addShiftLog(`🪖 PPE violation: ${issues.join(', ')}!`,'unknown');
+    }
+  }
+
+  updatePPEDisplay();
+}
+
+function updatePPEDisplay() {
+  const fmt=v=>v===null?'—':v?'✅':'❌';
+  const h=document.getElementById('helmetStatus');
+  const v=document.getElementById('vestStatus');
+  if(h) h.textContent=fmt(ppeStatus.helmet);
+  if(v) v.textContent=fmt(ppeStatus.vest);
+}
+
+// Tiny PPE status badges drawn on the canvas (top-right corner)
+function drawPPECorner() {
+  if(ppeStatus.helmet===null && ppeStatus.vest===null) return;
+  const W=canvas.width;
+  const items=[
+    {icon:'🪖', ok:ppeStatus.helmet},
+    {icon:'🦺', ok:ppeStatus.vest},
+  ];
+  items.forEach((it,i)=>{
+    if(it.ok===null) return;
+    const x=W-58, y=10+i*34;
+    ctx.fillStyle=it.ok?'rgba(34,197,94,.82)':'rgba(239,68,68,.82)';
+    _roundRect(x,y,50,28,6); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font='bold 13px Segoe UI';
+    ctx.fillText(`${it.icon}${it.ok?'✓':'✗'}`, x+6, y+19);
   });
 }
 

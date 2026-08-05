@@ -11,49 +11,37 @@
     header h1{font-size:17px;font-weight:700}
     header small{font-size:11px;color:#94a3b8}
     .main{width:100%;max-width:900px;padding:12px;display:flex;flex-direction:column;gap:10px}
-
     .counters{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
     .card{background:#1e293b;border-radius:12px;padding:10px;text-align:center;border:1px solid #334155}
     .card .num{font-size:30px;font-weight:800;line-height:1}
     .card .lbl{font-size:10px;color:#64748b;margin-top:3px;text-transform:uppercase}
-
     .cam-wrap{position:relative;border-radius:14px;overflow:hidden;background:#000;border:2px solid #334155;width:100%}
     #video{width:100%;display:block;opacity:0;position:absolute;pointer-events:none}
     #canvas{width:100%;display:block}
-
     .controls{background:#1e293b;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}
     .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    label{font-size:12px;color:#94a3b8;white-space:nowrap}
-    input[type=range]{flex:1;accent-color:#3b82f6}
-    .val{font-size:12px;color:#60a5fa;font-weight:700;min-width:32px;text-align:right}
-
+    label{font-size:12px;color:#94a3b8;white-space:nowrap;min-width:80px}
+    input[type=range]{flex:1;accent-color:#3b82f6;min-width:80px}
+    .val{font-size:12px;color:#60a5fa;font-weight:700;min-width:36px;text-align:right}
     .btn{padding:9px 14px;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;transition:.2s;flex:1}
     .btn:disabled{opacity:.4;cursor:not-allowed}
     .btn-green{background:#22c55e;color:#fff}
     .btn-red{background:#ef4444;color:#fff}
     .btn-gray{background:#334155;color:#f1f5f9}
     .btn-blue{background:#3b82f6;color:#fff}
-    .btn-sm{padding:6px 10px;font-size:11px;flex:unset}
-
+    .btn-orange{background:#f97316;color:#fff}
     .status-bar{display:flex;align-items:center;gap:10px;background:#1e293b;border-radius:10px;padding:10px 14px}
     .dot{width:9px;height:9px;border-radius:50%;background:#64748b;flex-shrink:0}
-    .dot.ready{background:#22c55e}
     .dot.active{background:#22c55e;animation:pulse 1s infinite}
     .dot.warn{background:#f59e0b}
+    .dot.err{background:#ef4444}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-
-    .alert-banner{display:none;background:#7f1d1d;border:1px solid #ef4444;border-radius:10px;padding:12px 16px;font-size:14px;font-weight:700;color:#fca5a5;animation:flash .7s infinite}
-    @keyframes flash{0%,100%{opacity:1}50%{opacity:.5}}
-
+    .alert-banner{display:none;background:#7f1d1d;border:1px solid #ef4444;border-radius:10px;padding:12px 16px;font-size:14px;font-weight:700;color:#fca5a5}
     .log-panel{background:#1e293b;border-radius:12px;overflow:hidden}
-    .log-hdr{padding:8px 14px;font-size:11px;color:#64748b;text-transform:uppercase;border-bottom:1px solid #334155;display:flex;justify-content:space-between}
+    .log-hdr{padding:8px 14px;font-size:11px;color:#64748b;text-transform:uppercase;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center}
     .log-row{display:flex;justify-content:space-between;padding:6px 14px;font-size:11px;border-bottom:1px solid #1a2332;color:#cbd5e1}
-    .log-row .t{color:#475569}
-
-    .zone-hint{font-size:11px;color:#94a3b8;text-align:center}
-
-    select{padding:8px 10px;border-radius:8px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;font-size:12px;outline:none}
-
+    .log-row .t{color:#475569;flex-shrink:0}
+    select{padding:8px 10px;border-radius:8px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;font-size:12px;outline:none;flex:1}
     @media(max-width:480px){.counters{grid-template-columns:repeat(2,1fr)}}
   </style>
 </head>
@@ -69,7 +57,7 @@
   </svg>
   <div>
     <h1>WMS Warehouse Monitor</h1>
-    <small>Motion Tracking · Works from any distance · No AI required</small>
+    <small>Motion Detection · Any distance · No AI needed</small>
   </div>
 </header>
 
@@ -77,7 +65,7 @@
 
   <div class="status-bar">
     <div class="dot" id="dot"></div>
-    <span id="statusTxt" style="font-size:13px;color:#94a3b8;flex:1">Press Start Camera</span>
+    <span id="statusTxt" style="font-size:13px;color:#94a3b8;flex:1">Press Start</span>
     <span id="fpsTxt" style="font-size:11px;color:#475569"></span>
   </div>
 
@@ -90,486 +78,465 @@
     <div class="card"><div class="num" style="color:#a855f7" id="numAlerts">0</div><div class="lbl">Alerts</div></div>
   </div>
 
-  <div class="cam-wrap" id="camWrap">
+  <div class="cam-wrap">
     <video id="video" autoplay muted playsinline></video>
     <canvas id="canvas"></canvas>
   </div>
 
   <div class="controls">
-    <!-- Camera buttons -->
     <div class="row">
-      <select id="camSelect" onchange="changeCam(this.value)" style="flex:1">
+      <select id="camSelect" onchange="selectedCamId=this.value||null">
         <option value="">📷 Default camera</option>
       </select>
-      <button class="btn btn-gray btn-sm" onclick="scanCams()">🔍</button>
-      <button class="btn btn-gray btn-sm" onclick="flipCam()">🔄</button>
+      <button class="btn btn-gray" style="flex:unset;padding:8px 12px" onclick="scanCams()">🔍</button>
+      <button class="btn btn-gray" style="flex:unset;padding:8px 12px" onclick="flipCam()">🔄</button>
     </div>
+
     <div class="row">
-      <button class="btn btn-green" id="btnStart" onclick="startCam()">▶ Start</button>
+      <button class="btn btn-green" id="btnStart" onclick="startCam()">▶ Start Camera</button>
       <button class="btn btn-red"   id="btnStop"  onclick="stopCam()" disabled>⏹ Stop</button>
     </div>
 
-    <!-- Sensitivity -->
+    <!-- Sensitivity: lower = more sensitive -->
     <div class="row">
       <label>Sensitivity</label>
-      <input type="range" id="sensitivity" min="5" max="80" value="25" oninput="updateSensitivity(this.value)">
-      <span class="val" id="sensVal">25</span>
+      <input type="range" id="rSens" min="3" max="60" value="12"
+        oninput="CFG.thresh=+this.value;resetBuf();document.getElementById('vSens').textContent=this.value">
+      <span class="val" id="vSens">12</span>
     </div>
-    <!-- Min size -->
+
+    <!-- Min blob size -->
     <div class="row">
       <label>Min size</label>
-      <input type="range" id="minSize" min="100" max="5000" value="500" oninput="updateMinSize(this.value)">
-      <span class="val" id="minSizeVal">500</span>
+      <input type="range" id="rMin" min="1" max="30" value="3"
+        oninput="CFG.minCells=+this.value;document.getElementById('vMin').textContent=this.value">
+      <span class="val" id="vMin">3</span>
     </div>
-    <!-- Frame delay -->
+
+    <!-- Frame delay (compare with N frames ago) -->
     <div class="row">
       <label>Frame delay</label>
-      <input type="range" id="frameDelay" min="2" max="30" value="8" oninput="FRAME_DELAY=+this.value;frameBuffer=[];document.getElementById('fdVal').textContent=this.value">
-      <span class="val" id="fdVal">8</span>
+      <input type="range" id="rDelay" min="1" max="25" value="8"
+        oninput="CFG.delay=+this.value;resetBuf();document.getElementById('vDelay').textContent=this.value">
+      <span class="val" id="vDelay">8</span>
     </div>
-    <!-- Trail length -->
-    <div class="row">
-      <label>Trail</label>
-      <input type="range" id="trailLen" min="0" max="60" value="25" oninput="TRAIL_MAX=+this.value;document.getElementById('trailVal').textContent=this.value">
-      <span class="val" id="trailVal">25</span>
-    </div>
+
     <!-- Debug toggle -->
-    <div class="row">
-      <button class="btn btn-gray btn-sm" onclick="showDebug=!showDebug;this.textContent=showDebug?'🔴 Debug ON':'👁 Motion Debug'">👁 Motion Debug</button>
-      <span style="font-size:11px;color:#64748b">يلوّن الحركة باللون الأحمر عشان تشوف إيه الـ sensitivity المناسب</span>
+    <div class="row" style="gap:8px">
+      <button class="btn btn-orange" id="btnDebug" onclick="toggleDebug()" style="flex:unset;padding:8px 14px;font-size:12px">
+        👁 Debug OFF
+      </button>
+      <span style="font-size:11px;color:#64748b">Debug يلوّن الحركة أحمر — اضغطه عشان تشوف إيه اللي بيتشاف</span>
     </div>
 
     <!-- Zone -->
-    <div class="row">
-      <button class="btn btn-blue btn-sm" onclick="startZone()" id="btnZone">📍 Draw Zone</button>
-      <button class="btn btn-gray btn-sm" onclick="clearZone()">✕ Clear Zone</button>
-      <div class="zone-hint" id="zoneHint">Tap corners of restricted area on the video</div>
+    <div class="row" style="gap:8px">
+      <button class="btn btn-blue"  style="flex:unset;padding:8px 12px;font-size:12px" onclick="startZone()">📍 Draw Zone</button>
+      <button class="btn btn-gray"  style="flex:unset;padding:8px 12px;font-size:12px" onclick="clearZone()">✕ Clear</button>
+      <span id="zoneHint" style="font-size:11px;color:#64748b">اضغط 4 نقاط على الفيديو لتحديد منطقة ممنوعة</span>
     </div>
   </div>
 
   <div class="log-panel">
     <div class="log-hdr">
       <span>Motion Log</span>
-      <button onclick="clearLog()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Clear</button>
+      <button onclick="motionLog=[];renderLog()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:11px">Clear</button>
     </div>
-    <div id="logList" style="max-height:180px;overflow-y:auto"></div>
+    <div id="logList" style="max-height:180px;overflow-y:auto">
+      <div style="padding:12px;font-size:11px;color:#475569;text-align:center">No events yet</div>
+    </div>
   </div>
 
 </div>
 
 <script>
-// ── Config ─────────────────────────────────────────────────
-let MOTION_THRESH = 12;   // pixel difference threshold (lower = more sensitive)
-let MIN_PIXELS    = 80;   // min pixels to count as motion region
-let TRAIL_MAX     = 25;   // trail length in frames
-let FRAME_DELAY   = 8;    // compare with frame N frames ago (key for far distance!)
-const CELL        = 8;    // grid cell size — smaller = more detail
-const PROC_SCALE  = 0.6;  // process at 60% resolution
-const MAX_AGE_MS  = 1500;
-const MATCH_DIST  = 0.25;
-let   showDebug   = false; // show raw motion mask
+// ════════════════════════════════════════════
+//  CONFIG  — all tunable params in one object
+// ════════════════════════════════════════════
+const CFG = {
+  thresh   : 12,   // pixel diff threshold (lower = more sensitive)
+  minCells : 3,    // min grid cells to count as a motion blob
+  delay    : 8,    // compare current frame with N frames ago
+  cell     : 10,   // grid cell size in pixels (proc space)
+  scale    : 0.5,  // downscale factor for processing
+  maxAgeMs : 1500, // tracker: remove object if not seen for this long
+  matchDist: 0.25, // tracker: max normalized dist to match objects
+  trailMax : 30,   // trail points per object
+  cellMotionPct: 0.08, // fraction of cell pixels that must differ
+};
 
-const OBJ_COLORS = [
-  '#22c55e','#3b82f6','#f59e0b','#a855f7',
-  '#06b6d4','#f97316','#ec4899','#84cc16',
-];
-
-// ── State ──────────────────────────────────────────────────
-let stream      = null;
-let animId      = null;
-let prevData    = null;
-let frameBuffer = [];   // stores past frames for delayed comparison
-let tracker     = new Tracker();
-let peakCount = 0;
-let alertCount= 0;
-let facingMode= 'environment';
+// ════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════
+let stream   = null;
+let animId   = null;
+let running  = false;
+let showDebug= false;
+let facingMode    = 'environment';
 let selectedCamId = null;
+let frameBuffer   = [];
+let objects       = {};
+let nextObjId     = 1;
+let peakCount     = 0;
+let alertCount    = 0;
+let lastAlertMs   = 0;
+let motionLog     = [];
+let fpsCount      = 0;
+let lastFpsMs     = Date.now();
 let zoneDrawing   = false;
 let zonePoints    = [];
 let zoneActive    = false;
-let lastAlertTime = 0;
-let motionLog     = [];
-let frameCount    = 0;
-let lastFpsTime   = Date.now();
 
-const video  = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx    = canvas.getContext('2d', {willReadFrequently:true});
+const COLORS = ['#22c55e','#3b82f6','#f59e0b','#a855f7',
+                '#06b6d4','#f97316','#ec4899','#84cc16'];
 
-// Processing canvas (small, for speed)
-const proc   = document.createElement('canvas');
-const pCtx   = proc.getContext('2d', {willReadFrequently:true});
+const video = document.getElementById('video');
+const canvas= document.getElementById('canvas');
+const ctx   = canvas.getContext('2d', {willReadFrequently:true});
 
-// ── Tracker ────────────────────────────────────────────────
-function Tracker() {
-  this.objects = {};
-  this.nextId  = 1;
+// Small processing canvas
+const proc  = document.createElement('canvas');
+const pCtx  = proc.getContext('2d',  {willReadFrequently:true});
 
-  this.update = function(boxes) {
-    const now = Date.now();
-    const usedBoxes = new Set();
+// ════════════════════════════════════════════
+//  MOTION DETECTION
+// ════════════════════════════════════════════
+function resetBuf(){ frameBuffer = []; }
 
-    // Match existing objects to new boxes
-    Object.values(this.objects).forEach(obj => {
-      let bestDist = MATCH_DIST;
-      let bestIdx  = -1;
-      boxes.forEach((box, i) => {
-        if (usedBoxes.has(i)) return;
-        const dx = (obj.cx - box.cx);
-        const dy = (obj.cy - box.cy);
-        const d  = Math.sqrt(dx*dx + dy*dy);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      });
-      if (bestIdx >= 0) {
-        const b = boxes[bestIdx];
-        obj.box = b;
-        obj.cx  = b.cx; obj.cy = b.cy;
-        obj.trail.push({x:b.cx, y:b.cy});
-        if (obj.trail.length > TRAIL_MAX) obj.trail.shift();
-        obj.lastSeen = now; obj.moving = true;
-        usedBoxes.add(bestIdx);
-      } else {
-        obj.moving = false;
-      }
-    });
+function detectAndDraw() {
+  if (!video.videoWidth) return;
 
-    // Remove old
-    Object.keys(this.objects).forEach(id => {
-      if (now - this.objects[id].lastSeen > MAX_AGE_MS) delete this.objects[id];
-    });
-
-    // Add new
-    boxes.forEach((b, i) => {
-      if (!usedBoxes.has(i)) {
-        const id = this.nextId++;
-        this.objects[id] = {
-          id, box:b, cx:b.cx, cy:b.cy,
-          trail:[{x:b.cx,y:b.cy}],
-          color: OBJ_COLORS[(id-1) % OBJ_COLORS.length],
-          lastSeen: now, moving: true, frames: 1,
-        };
-      }
-    });
-
-    return Object.values(this.objects);
-  };
-
-  this.reset = function(){ this.objects={}; this.nextId=1; };
-}
-
-// ── Motion detection ────────────────────────────────────────
-function detectMotion() {
-  const PW = proc.width, PH = proc.height;
-  pCtx.drawImage(video, 0, 0, PW, PH);
-  const curr = pCtx.getImageData(0, 0, PW, PH).data;
-
-  // Frame buffer: compare with FRAME_DELAY frames ago
-  frameBuffer.push(new Uint8ClampedArray(curr));
-  if (frameBuffer.length < FRAME_DELAY) return [];
-  prevData = frameBuffer.shift();
-
-  // Grid-based motion map
-  const GW = Math.ceil(PW/CELL), GH = Math.ceil(PH/CELL);
-  const grid = new Uint8Array(GW * GH);
-
-  for (let gy = 0; gy < GH; gy++) {
-    for (let gx = 0; gx < GW; gx++) {
-      let motionPx = 0, total = 0;
-      for (let dy = 0; dy < CELL; dy++) {
-        const py = gy*CELL+dy; if (py >= PH) continue;
-        for (let dx = 0; dx < CELL; dx++) {
-          const px = gx*CELL+dx; if (px >= PW) continue;
-          const i = (py*PW+px)*4;
-          const d = Math.abs(curr[i]-prevData[i]) + Math.abs(curr[i+1]-prevData[i+1]) + Math.abs(curr[i+2]-prevData[i+2]);
-          if (d > MOTION_THRESH) motionPx++;
-          total++;
-        }
-      }
-      grid[gy*GW+gx] = motionPx > total*0.18 ? 1 : 0;
-    }
-  }
-
-  prevData = curr.slice();
-
-  // Connected components on grid
-  const visited = new Uint8Array(GW * GH);
-  const boxes   = [];
-  const scaleX  = canvas.width  / PW;
-  const scaleY  = canvas.height / PH;
-
-  for (let gy = 0; gy < GH; gy++) {
-    for (let gx = 0; gx < GW; gx++) {
-      const idx = gy*GW+gx;
-      if (!grid[idx] || visited[idx]) continue;
-      // BFS on grid
-      const cells = [];
-      const q = [idx]; visited[idx] = 1;
-      while (q.length) {
-        const cur = q.shift(); cells.push(cur);
-        const cx = cur%GW, cy = Math.floor(cur/GW);
-        [[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1],[cx-1,cy-1],[cx+1,cy+1],[cx-1,cy+1],[cx+1,cy-1]].forEach(([nx,ny])=>{
-          if (nx>=0&&nx<GW&&ny>=0&&ny<GH) {
-            const ni=ny*GW+nx;
-            if (grid[ni]&&!visited[ni]){visited[ni]=1;q.push(ni);}
-          }
-        });
-      }
-      if (cells.length * CELL * CELL < MIN_PIXELS) continue;
-
-      const gxs = cells.map(c=>c%GW);
-      const gys = cells.map(c=>Math.floor(c/GW));
-      const x1  = Math.min(...gxs)*CELL * scaleX;
-      const y1  = Math.min(...gys)*CELL * scaleY;
-      const x2  = (Math.max(...gxs)+1)*CELL * scaleX;
-      const y2  = (Math.max(...gys)+1)*CELL * scaleY;
-      const pad = 10;
-      boxes.push({
-        x:x1-pad, y:y1-pad, w:(x2-x1)+pad*2, h:(y2-y1)+pad*2,
-        cx: ((x1+x2)/2) / canvas.width,
-        cy: ((y1+y2)/2) / canvas.height,
-        area: cells.length,
-      });
-    }
-  }
-  return boxes;
-}
-
-// ── Main loop ──────────────────────────────────────────────
-function loop() {
-  if (!stream || !video.videoWidth) { animId=requestAnimationFrame(loop); return; }
-
-  // Sync canvas size
+  // 1. Sync canvas sizes
   if (canvas.width !== video.videoWidth) {
     canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
-    proc.width    = Math.round(video.videoWidth  * PROC_SCALE);
-    proc.height   = Math.round(video.videoHeight * PROC_SCALE);
-    prevData = null;
+    proc.width    = Math.max(1, Math.round(video.videoWidth  * CFG.scale));
+    proc.height   = Math.max(1, Math.round(video.videoHeight * CFG.scale));
+    resetBuf();
   }
 
-  // Draw video frame
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const CW = canvas.width, CH = canvas.height;
+  const PW = proc.width,   PH = proc.height;
 
-  // Motion detection
-  const boxes   = detectMotion();
+  // 2. Draw video → main canvas + proc canvas
+  ctx.drawImage(video, 0, 0, CW, CH);
+  pCtx.drawImage(video, 0, 0, PW, PH);
 
-  // Debug: show raw motion mask
-  if (showDebug && frameBuffer.length >= FRAME_DELAY) {
-    const PW=proc.width, PH=proc.height;
-    const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
-    const scX=canvas.width/PW, scY=canvas.height/PH;
-    const curr=pCtx.getImageData(0,0,PW,PH).data;
-    const prev=frameBuffer[0];
-    for(let py=0;py<PH;py++) for(let px=0;px<PW;px++){
-      const i=(py*PW+px)*4;
-      const d=Math.abs(curr[i]-prev[i])+Math.abs(curr[i+1]-prev[i+1])+Math.abs(curr[i+2]-prev[i+2]);
-      if(d>MOTION_THRESH){
-        const cx=Math.round(px*scX), cy=Math.round(py*scY);
-        const ci=(cy*canvas.width+cx)*4;
-        imgData.data[ci]=255;imgData.data[ci+1]=50;imgData.data[ci+2]=50;imgData.data[ci+3]=180;
+  // 3. Capture current frame pixels
+  let currPx;
+  try { currPx = pCtx.getImageData(0, 0, PW, PH).data; }
+  catch(e) { return; }
+
+  // 4. Push to buffer, wait for enough frames
+  frameBuffer.push(new Uint8ClampedArray(currPx));
+  if (frameBuffer.length <= CFG.delay) return;
+  const oldPx = frameBuffer.shift();  // frame from N frames ago
+
+  // 5. Build motion grid
+  const GW   = Math.ceil(PW / CFG.cell);
+  const GH   = Math.ceil(PH / CFG.cell);
+  const grid = new Uint8Array(GW * GH);
+  const scaleX = CW / PW;
+  const scaleY = CH / PH;
+
+  for (let gy = 0; gy < GH; gy++) {
+    for (let gx = 0; gx < GW; gx++) {
+      let moved = 0, total = 0;
+      for (let dy = 0; dy < CFG.cell; dy++) {
+        const py = gy * CFG.cell + dy; if (py >= PH) continue;
+        for (let dx = 0; dx < CFG.cell; dx++) {
+          const px = gx * CFG.cell + dx; if (px >= PW) continue;
+          const i  = (py * PW + px) * 4;
+          const d  = Math.abs(currPx[i]   - oldPx[i])
+                   + Math.abs(currPx[i+1] - oldPx[i+1])
+                   + Math.abs(currPx[i+2] - oldPx[i+2]);
+          if (d > CFG.thresh) moved++;
+          total++;
+        }
+      }
+      if (moved / total > CFG.cellMotionPct) {
+        grid[gy * GW + gx] = 1;
+
+        // Debug overlay — draw red rectangle for this cell
+        if (showDebug) {
+          ctx.fillStyle = 'rgba(255,30,30,0.45)';
+          ctx.fillRect(gx*CFG.cell*scaleX, gy*CFG.cell*scaleY,
+                       CFG.cell*scaleX,    CFG.cell*scaleY);
+        }
       }
     }
-    ctx.putImageData(imgData,0,0);
   }
 
-  const objects = tracker.update(boxes);
+  // 6. Connected components → bounding boxes
+  const visited = new Uint8Array(GW * GH);
+  const blobs   = [];
 
-  // Draw zone
-  if (zonePoints.length > 0) drawZone();
+  for (let gy = 0; gy < GH; gy++) {
+    for (let gx = 0; gx < GW; gx++) {
+      const idx = gy * GW + gx;
+      if (!grid[idx] || visited[idx]) continue;
 
-  // Draw tracked objects
-  let movingCount = 0;
-  objects.forEach(obj => {
-    if (!obj.moving) return;
-    movingCount++;
+      // BFS on grid
+      const cells = [];
+      const q = [idx];
+      visited[idx] = 1;
+      while (q.length) {
+        const cur = q.pop();
+        cells.push(cur);
+        const cx = cur % GW, cy = Math.floor(cur / GW);
+        for (const [nx,ny] of [[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]]) {
+          if (nx<0||nx>=GW||ny<0||ny>=GH) continue;
+          const ni = ny*GW+nx;
+          if (grid[ni] && !visited[ni]) { visited[ni]=1; q.push(ni); }
+        }
+      }
+      if (cells.length < CFG.minCells) continue;
+
+      const gxs = cells.map(c => c % GW);
+      const gys = cells.map(c => Math.floor(c / GW));
+      const x1  = Math.min(...gxs) * CFG.cell * scaleX;
+      const y1  = Math.min(...gys) * CFG.cell * scaleY;
+      const x2  = (Math.max(...gxs)+1) * CFG.cell * scaleX;
+      const y2  = (Math.max(...gys)+1) * CFG.cell * scaleY;
+      const pad = 8;
+      blobs.push({
+        x: x1-pad, y: y1-pad,
+        w: (x2-x1)+pad*2, h: (y2-y1)+pad*2,
+        cx: (x1+x2) / 2 / CW,
+        cy: (y1+y2) / 2 / CH,
+      });
+    }
+  }
+
+  // 7. Update tracker
+  updateTracker(blobs, CW, CH);
+
+  // 8. Draw zone
+  if (zonePoints.length > 1) drawZone();
+
+  // 9. Stats
+  const now = Date.now();
+  fpsCount++;
+  if (now - lastFpsMs >= 1000) {
+    document.getElementById('fpsTxt').textContent = fpsCount + ' fps';
+    fpsCount = 0; lastFpsMs = now;
+  }
+}
+
+// ════════════════════════════════════════════
+//  TRACKER
+// ════════════════════════════════════════════
+function updateTracker(blobs, CW, CH) {
+  const now = Date.now();
+  const usedBlobs = new Set();
+
+  // Match existing objects to blobs
+  Object.values(objects).forEach(obj => {
+    let best = null, bestD = CFG.matchDist;
+    blobs.forEach((b, i) => {
+      if (usedBlobs.has(i)) return;
+      const d = Math.hypot(obj.cx - b.cx, obj.cy - b.cy);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best !== null) {
+      const b = blobs[best];
+      obj.box  = b;
+      obj.cx   = b.cx; obj.cy = b.cy;
+      obj.trail.push({x: b.cx*CW, y: b.cy*CH});
+      if (obj.trail.length > CFG.trailMax) obj.trail.shift();
+      obj.lastSeen = now;
+      obj.active   = true;
+      usedBlobs.add(best);
+    } else {
+      obj.active = false;
+    }
+  });
+
+  // Remove stale
+  Object.keys(objects).forEach(id => {
+    if (now - objects[id].lastSeen > CFG.maxAgeMs) delete objects[id];
+  });
+
+  // Add new blobs
+  blobs.forEach((b, i) => {
+    if (usedBlobs.has(i)) return;
+    const id = nextObjId++;
+    objects[id] = {
+      id, box: b, cx: b.cx, cy: b.cy,
+      trail: [{x: b.cx*CW, y: b.cy*CH}],
+      color: COLORS[(id-1) % COLORS.length],
+      lastSeen: now, active: true,
+    };
+  });
+
+  // Draw all active objects
+  let movingN = 0;
+  Object.values(objects).forEach(obj => {
+    if (!obj.active) return;
+    movingN++;
     const {x,y,w,h} = obj.box;
-    const color = obj.color;
+    const c = obj.color;
 
     // Trail
     if (obj.trail.length > 1) {
       ctx.beginPath();
-      ctx.moveTo(obj.trail[0].x * canvas.width, obj.trail[0].y * canvas.height);
-      obj.trail.forEach(pt => ctx.lineTo(pt.x*canvas.width, pt.y*canvas.height));
-      ctx.strokeStyle = color+'88'; ctx.lineWidth = 2; ctx.setLineDash([4,3]);
-      ctx.stroke(); ctx.setLineDash([]);
+      ctx.moveTo(obj.trail[0].x, obj.trail[0].y);
+      obj.trail.forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.strokeStyle = c+'90'; ctx.lineWidth = 2.5;
+      ctx.setLineDash([4,3]); ctx.stroke(); ctx.setLineDash([]);
     }
 
-    // Box
-    ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+    // Bounding box
+    ctx.strokeStyle = c; ctx.lineWidth = 2.5;
     ctx.strokeRect(x, y, w, h);
-    ctx.fillStyle = color+'18';
-    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = c + '20'; ctx.fillRect(x, y, w, h);
 
     // Label
     const lbl = `#${obj.id}`;
-    ctx.fillStyle = color; ctx.fillRect(x, y-24, 36, 24);
+    const lw = ctx.measureText(lbl).width + 10;
+    ctx.fillStyle = c; ctx.fillRect(x, y-24, lw, 24);
     ctx.fillStyle = '#fff'; ctx.font = 'bold 13px Segoe UI';
-    ctx.fillText(lbl, x+4, y-8);
+    ctx.fillText(lbl, x+5, y-8);
 
     // Zone check
-    if (zoneActive && zonePoints.length > 2) {
-      const px = x + w/2, py = y + h/2;
-      if (pointInPoly(px, py, zonePoints)) {
-        ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
-        ctx.strokeRect(x-2, y-2, w+4, h+4);
-        const now = Date.now();
-        if (now - lastAlertTime > 5000) {
-          lastAlertTime = now; alertCount++;
-          document.getElementById('numAlerts').textContent = alertCount;
-          document.getElementById('alertBanner').style.display = 'block';
-          setTimeout(()=>document.getElementById('alertBanner').style.display='none', 4000);
-          addLog(`🚨 Object #${obj.id} entered RESTRICTED ZONE`);
+    if (zoneActive && zonePoints.length >= 3) {
+      const px = x+w/2, py = y+h/2;
+      if (pointInPoly(px, py)) {
+        ctx.strokeStyle='#ef4444'; ctx.lineWidth=3;
+        ctx.strokeRect(x-2,y-2,w+4,h+4);
+        const now2=Date.now();
+        if (now2-lastAlertMs>5000){
+          lastAlertMs=now2; alertCount++;
+          document.getElementById('numAlerts').textContent=alertCount;
+          const ab=document.getElementById('alertBanner');
+          ab.style.display='block'; setTimeout(()=>ab.style.display='none',4000);
+          addLog(`🚨 Object #${obj.id} in RESTRICTED ZONE`);
         }
       }
     }
   });
 
-  // Stats
-  if (movingCount > peakCount) {
-    peakCount = movingCount;
-    document.getElementById('numPeak').textContent = peakCount;
-  }
-  document.getElementById('numMoving').textContent = movingCount;
-  document.getElementById('numTotal').textContent  = objects.length;
+  if (movingN > peakCount){ peakCount=movingN; document.getElementById('numPeak').textContent=peakCount; }
+  document.getElementById('numMoving').textContent = movingN;
+  document.getElementById('numTotal').textContent  = Object.keys(objects).length;
+}
 
-  // FPS
-  frameCount++;
-  const now = Date.now();
-  if (now - lastFpsTime >= 1000) {
-    document.getElementById('fpsTxt').textContent = frameCount + ' fps';
-    frameCount = 0; lastFpsTime = now;
-  }
-
+// ════════════════════════════════════════════
+//  MAIN LOOP
+// ════════════════════════════════════════════
+function loop() {
+  if (!running) return;
+  detectAndDraw();
   animId = requestAnimationFrame(loop);
 }
 
-// ── Zone drawing ───────────────────────────────────────────
-function startZone() {
-  zoneDrawing = true; zonePoints = []; zoneActive = false;
-  document.getElementById('btnZone').textContent = '📍 Drawing... (tap corners)';
-  canvas.style.cursor = 'crosshair';
-  canvas.onclick = addZonePoint;
-}
-
-function addZonePoint(e) {
-  if (!zoneDrawing) return;
-  const r = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / r.width;
-  const scaleY = canvas.height / r.height;
-  zonePoints.push({
-    x: (e.clientX - r.left) * scaleX,
-    y: (e.clientY - r.top)  * scaleY,
-  });
-  if (zonePoints.length >= 4) {
-    zoneDrawing = false; zoneActive = true;
-    document.getElementById('btnZone').textContent = '📍 Draw Zone';
-    document.getElementById('zoneHint').textContent = `Zone active (${zonePoints.length} points)`;
-    canvas.style.cursor = '';
-    canvas.onclick = null;
-  }
-}
-
-function clearZone() {
-  zonePoints=[]; zoneActive=false; zoneDrawing=false;
-  canvas.onclick=null; canvas.style.cursor='';
-  document.getElementById('btnZone').textContent='📍 Draw Zone';
-  document.getElementById('zoneHint').textContent='Tap corners of restricted area on the video';
-}
-
-function drawZone() {
-  if (zonePoints.length < 2) return;
-  ctx.beginPath();
-  ctx.moveTo(zonePoints[0].x, zonePoints[0].y);
-  zonePoints.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));
-  ctx.closePath();
-  ctx.fillStyle   = 'rgba(239,68,68,.12)';
-  ctx.strokeStyle = '#ef4444';
-  ctx.lineWidth   = 2;
-  ctx.setLineDash([6,4]);
-  ctx.fill(); ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = '#ef4444';
-  ctx.font = 'bold 12px Segoe UI';
-  ctx.fillText('⚠ RESTRICTED', zonePoints[0].x+4, zonePoints[0].y-6);
-  zonePoints.forEach(p=>{
-    ctx.fillStyle='#ef4444';
-    ctx.beginPath(); ctx.arc(p.x,p.y,5,0,Math.PI*2); ctx.fill();
-  });
-}
-
-function pointInPoly(x, y, pts) {
-  let inside = false;
-  for (let i=0,j=pts.length-1; i<pts.length; j=i++) {
-    const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
-    if (((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
-  }
-  return inside;
-}
-
-// ── Camera ─────────────────────────────────────────────────
+// ════════════════════════════════════════════
+//  CAMERA
+// ════════════════════════════════════════════
 async function scanCams() {
-  try { const t=await navigator.mediaDevices.getUserMedia({video:true}); t.getTracks().forEach(t=>t.stop()); } catch(e){}
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter(d=>d.kind==='videoinput');
-  const sel = document.getElementById('camSelect');
-  sel.innerHTML = `<option value="">📷 Default</option>`
+  try{ const t=await navigator.mediaDevices.getUserMedia({video:true}); t.getTracks().forEach(t=>t.stop()); }catch(e){}
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const cams = devs.filter(d=>d.kind==='videoinput');
+  document.getElementById('camSelect').innerHTML =
+    `<option value="">📷 Default</option>`
     + cams.map((c,i)=>`<option value="${c.deviceId}">${c.label||'Camera '+(i+1)}</option>`).join('');
 }
-
-function changeCam(id){ selectedCamId=id||null; }
 
 function flipCam(){
   facingMode = facingMode==='user'?'environment':'user';
   selectedCamId=null;
   document.getElementById('camSelect').value='';
-  if(stream) startCam();
+  if(running) startCam();
 }
 
 async function startCam() {
-  if (stream) stopCam();
+  if (stream) { stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  resetBuf(); objects={}; nextObjId=1; peakCount=0;
+  setStatus('warn','Starting camera...');
   try {
-    setDot('warn','Starting camera...');
-    const constraints = {
+    stream = await navigator.mediaDevices.getUserMedia({
       video: selectedCamId
-        ? {deviceId:{exact:selectedCamId},width:{ideal:1920},height:{ideal:1080}}
-        : {facingMode, width:{ideal:1920},height:{ideal:1080}},
-      audio:false
-    };
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
+        ? {deviceId:{exact:selectedCamId}}
+        : {facingMode, width:{ideal:1920}, height:{ideal:1080}},
+      audio: false,
+    });
     video.srcObject = stream; await video.play();
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    proc.width   = Math.round(video.videoWidth  * PROC_SCALE);
-    proc.height  = Math.round(video.videoHeight * PROC_SCALE);
-    prevData = null;
-    tracker.reset(); peakCount = 0;
+    running = true;
     document.getElementById('btnStart').disabled = true;
     document.getElementById('btnStop').disabled  = false;
-    setDot('active','Detecting motion...');
-    animId = requestAnimationFrame(loop);
-  } catch(e) { setDot('warn','Camera error: '+e.message); }
+    setStatus('active','Detecting motion...');
+    loop();
+  } catch(e){ setStatus('err','Camera error: '+e.message); }
 }
 
-function stopCam() {
-  cancelAnimationFrame(animId);
-  stream?.getTracks().forEach(t=>t.stop()); stream=null; prevData=null;
+function stopCam(){
+  running=false; cancelAnimationFrame(animId);
+  stream?.getTracks().forEach(t=>t.stop()); stream=null;
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  document.getElementById('btnStart').disabled = false;
-  document.getElementById('btnStop').disabled  = true;
-  setDot('','Stopped');
+  document.getElementById('btnStart').disabled=false;
+  document.getElementById('btnStop').disabled=true;
+  setStatus('','Stopped');
 }
 
-// ── Controls ───────────────────────────────────────────────
-function updateSensitivity(v){
-  MOTION_THRESH=+v;
-  document.getElementById('sensVal').textContent=v;
-  frameBuffer=[]; // reset buffer after change
+// ════════════════════════════════════════════
+//  ZONE
+// ════════════════════════════════════════════
+function startZone(){
+  zoneDrawing=true; zonePoints=[]; zoneActive=false;
+  document.getElementById('zoneHint').textContent='اضغط على الفيديو لتحديد الزاوية (4 نقاط)';
+  canvas.style.cursor='crosshair';
+  canvas.onclick=addZonePt;
 }
-function updateMinSize(v){
-  MIN_PIXELS=+v;
-  document.getElementById('minSizeVal').textContent=v;
+function addZonePt(e){
+  if(!zoneDrawing)return;
+  const r=canvas.getBoundingClientRect();
+  zonePoints.push({
+    x:(e.clientX-r.left)*(canvas.width/r.width),
+    y:(e.clientY-r.top)*(canvas.height/r.height),
+  });
+  if(zonePoints.length>=4){
+    zoneDrawing=false; zoneActive=true;
+    canvas.style.cursor=''; canvas.onclick=null;
+    document.getElementById('zoneHint').textContent=`✅ Zone active — ${zonePoints.length} points`;
+  }
+}
+function clearZone(){
+  zonePoints=[]; zoneActive=false; zoneDrawing=false;
+  canvas.onclick=null; canvas.style.cursor='';
+  document.getElementById('zoneHint').textContent='اضغط 4 نقاط على الفيديو لتحديد منطقة ممنوعة';
+}
+function drawZone(){
+  ctx.beginPath();
+  ctx.moveTo(zonePoints[0].x,zonePoints[0].y);
+  zonePoints.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.closePath();
+  ctx.fillStyle='rgba(239,68,68,.12)';
+  ctx.strokeStyle='#ef4444'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+  ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#ef4444'; ctx.font='bold 12px Segoe UI';
+  ctx.fillText('⚠ RESTRICTED',zonePoints[0].x+4,zonePoints[0].y-6);
+}
+function pointInPoly(px,py){
+  const pts=zonePoints; let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i].x,yi=pts[i].y,xj=pts[j].x,yj=pts[j].y;
+    if(((yi>py)!==(yj>py))&&(px<(xj-xi)*(py-yi)/(yj-yi)+xi))inside=!inside;
+  }
+  return inside;
 }
 
-// ── Log ────────────────────────────────────────────────────
+// ════════════════════════════════════════════
+//  UI HELPERS
+// ════════════════════════════════════════════
+function toggleDebug(){
+  showDebug=!showDebug;
+  document.getElementById('btnDebug').textContent= showDebug?'🔴 Debug ON':'👁 Debug OFF';
+  document.getElementById('btnDebug').style.background= showDebug?'#ef4444':'#f97316';
+}
+function setStatus(cls,msg){
+  document.getElementById('dot').className='dot '+cls;
+  document.getElementById('statusTxt').textContent=msg;
+}
 function addLog(msg){
   motionLog.unshift({msg,time:new Date().toLocaleTimeString()});
   if(motionLog.length>50)motionLog.pop();
@@ -577,18 +544,10 @@ function addLog(msg){
 }
 function renderLog(){
   const el=document.getElementById('logList');
-  if(!motionLog.length){el.innerHTML='<div style="padding:12px;font-size:11px;color:#475569;text-align:center">No events</div>';return;}
-  el.innerHTML=motionLog.map(e=>`<div class="log-row"><span>${e.msg}</span><span class="t">${e.time}</span></div>`).join('');
+  el.innerHTML=motionLog.length
+    ? motionLog.map(e=>`<div class="log-row"><span>${e.msg}</span><span class="t">${e.time}</span></div>`).join('')
+    : '<div style="padding:12px;font-size:11px;color:#475569;text-align:center">No events yet</div>';
 }
-function clearLog(){ motionLog=[]; renderLog(); }
-
-// ── Helpers ────────────────────────────────────────────────
-function setDot(cls,msg){
-  document.getElementById('dot').className='dot '+cls;
-  document.getElementById('statusTxt').textContent=msg;
-}
-
-renderLog();
 </script>
 </body>
 </html>

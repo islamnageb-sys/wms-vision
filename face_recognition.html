@@ -198,6 +198,7 @@
           <button class="btn btn-gray"  style="flex:1" onclick="scanCameras()">🔍 Scan</button>
           <button class="btn btn-green" style="flex:2" onclick="startCamera()">▶ Start</button>
           <button class="btn btn-red"   style="flex:1" onclick="stopCamera()">⏹</button>
+          <button class="btn btn-gray"  style="flex:1" onclick="flipCamera()" title="Switch front/back">🔄</button>
         </div>
       </div>
 
@@ -282,6 +283,7 @@ let mpPoseLandmarks  = null;
 let capturing        = false;
 let mpPose           = null;
 let selectedCamId    = null;        // selected camera device
+let facingMode       = 'user';     // 'user'=front, 'environment'=back
 let pocketTimers     = {L:0,R:0};  // pocket detection timers
 let lastPocketAlert  = 0;
 
@@ -394,6 +396,12 @@ async function scanCameras() {
   setStatus('ready',`Found ${cams.length} camera(s). Select then Start.`);
 }
 function changeCam(id){ selectedCamId=id||null; }
+function flipCamera(){
+  facingMode = facingMode==='user' ? 'environment' : 'user';
+  selectedCamId = null; // clear specific device, use facingMode instead
+  ['camSelectReg','camSelectDet'].forEach(s=>{ const el=document.getElementById(s); if(el)el.value=''; });
+  if(stream) startCamera(); // restart with new facing
+}
 
 // ── Camera start ───────────────────────────────────────────
 async function startCamera() {
@@ -402,7 +410,7 @@ async function startCamera() {
     const constraints = {
       video: selectedCamId
         ? {deviceId:{exact:selectedCamId},width:{ideal:1280},height:{ideal:720}}
-        : {width:{ideal:1280},height:{ideal:720}},
+        : {facingMode, width:{ideal:1280},height:{ideal:720}},
       audio:false
     };
     stream = await navigator.mediaDevices.getUserMedia(constraints);

@@ -103,6 +103,19 @@
     .sdot{width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;animation:pulse 2s infinite}
 
     @media(max-width:640px){.layout{flex-direction:column}.side-col{width:100%}}
+
+    /* Recording */
+    #recStatus{display:none;text-align:center;padding:7px;background:rgba(239,68,68,.12);border:1px solid #ef4444;border-radius:8px;font-size:13px;font-weight:700;color:#ef4444}
+    #recStatus.active{display:block;animation:flash .8s infinite}
+    .clip-row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid #1a2332;font-size:12px}
+    .clip-row:hover{background:#1a2332}
+    .clip-icon{font-size:20px;flex-shrink:0}
+    .clip-info{flex:1}
+    .clip-trigger{font-weight:700;font-size:12px}
+    .clip-meta{color:#475569;font-size:11px;margin-top:2px}
+    .btn-save{padding:5px 12px;background:#1e3a5f;border:1px solid #3b82f6;border-radius:6px;color:#60a5fa;font-size:11px;font-weight:700;text-decoration:none;white-space:nowrap}
+    .btn-save:hover{background:#2563eb;color:#fff}
+    #recCorner{position:absolute;top:10px;left:10px;background:rgba(239,68,68,.85);color:#fff;font-size:12px;font-weight:700;padding:4px 10px;border-radius:20px;display:none;z-index:10;animation:flash .8s infinite}
   </style>
 </head>
 <body>
@@ -138,9 +151,10 @@
   <div id="alertBanner">⚠️ UNKNOWN PERSON DETECTED — Not registered in the system!</div>
 
   <div class="tabs">
-    <button class="tab active" id="tabReg" onclick="switchMode('register')">👤 Register</button>
-    <button class="tab"        id="tabDet" onclick="switchMode('detect')">🔍 Detection</button>
-    <button class="tab"        id="tabLog" onclick="switchMode('log')">📋 Shift Log</button>
+    <button class="tab active" id="tabReg"   onclick="switchMode('register')">👤 Register</button>
+    <button class="tab"        id="tabDet"   onclick="switchMode('detect')">🔍 Detection</button>
+    <button class="tab"        id="tabLog"   onclick="switchMode('log')">📋 Shift Log</button>
+    <button class="tab"        id="tabClips" onclick="switchMode('clips')">📹 Clips <span id="clipsCount" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:3px">0</span></button>
   </div>
 
   <div class="layout">
@@ -150,6 +164,7 @@
         <video id="video" autoplay muted playsinline></video>
         <canvas id="canvas"></canvas>
         <div id="faceGuide"></div>
+        <div id="recCorner">⏺ REC</div>
       </div>
 
       <!-- REGISTER panel -->
@@ -200,6 +215,7 @@
             <div class="lbl">🦺 Vest</div>
           </div>
         </div>
+        <div id="recStatus">⏺ RECORDING EVENT CLIP...</div>
         <div class="toggles">
           <button class="toggle-btn on" id="togSkeleton" onclick="toggleOvr('skeleton')">🦴 Skeleton</button>
           <button class="toggle-btn on" id="togFace"     onclick="toggleOvr('face')">👤 Face ID</button>
@@ -224,6 +240,20 @@
           <button class="btn btn-gray" style="width:auto;padding:6px 12px;font-size:11px" onclick="clearLog()">Clear</button>
         </div>
         <div id="shiftLogList" style="max-height:420px;overflow-y:auto"></div>
+      </div>
+
+      <!-- CLIPS panel -->
+      <div class="panel" id="panelClips" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h3>📹 Event Clips &amp; Screenshots</h3>
+          <button class="btn btn-gray" style="width:auto;padding:6px 12px;font-size:11px" onclick="clearClips()">Clear All</button>
+        </div>
+        <div style="font-size:11px;color:#475569;padding:2px 0 6px">
+          Saved automatically on every alert — pocket, unknown person, PPE violation
+        </div>
+        <div id="clipsList" style="max-height:420px;overflow-y:auto">
+          <div style="padding:14px;font-size:12px;color:#475569;text-align:center">No clips yet — start detection and trigger an event</div>
+        </div>
       </div>
 
     </div>
@@ -316,6 +346,17 @@ let lastPPECheck = 0;
 let lastPPEAlert = 0;
 let offCtx       = null;   // offscreen canvas context for pixel sampling
 
+// ── Smart Recording ─────────────────────────────────────────
+const CLIP_DURATION_MS  = 45000;  // 45 seconds video after event
+const CLIP_COOLDOWN_MS  = 30000;  // same event won't retrigger within 30s
+const MAX_CLIPS         = 20;     // keep max 20 clips in memory
+
+let canvasStream        = null;   // MediaStream from canvas
+let eventRecorder       = null;   // active MediaRecorder
+let eventRecording      = false;
+let savedClips          = [];     // {id, type, trigger, label, timestamp, blob, url}
+let captureCooldowns    = {};     // eventType → last trigger time
+
 const video  = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx    = canvas.getContext('2d');
@@ -393,12 +434,15 @@ function switchMode(m) {
   document.getElementById('panelRegister').style.display = m==='register'?'flex':'none';
   document.getElementById('panelDetect').style.display   = m==='detect'  ?'flex':'none';
   document.getElementById('panelLog').style.display      = m==='log'     ?'flex':'none';
-  document.getElementById('tabReg').classList.toggle('active', m==='register');
-  document.getElementById('tabDet').classList.toggle('active', m==='detect');
-  document.getElementById('tabLog').classList.toggle('active', m==='log');
-  document.getElementById('camWrap').style.display  = m==='log'?'none':'block';
+  document.getElementById('panelClips').style.display    = m==='clips'   ?'flex':'none';
+  document.getElementById('tabReg').classList.toggle('active',   m==='register');
+  document.getElementById('tabDet').classList.toggle('active',   m==='detect');
+  document.getElementById('tabLog').classList.toggle('active',   m==='log');
+  document.getElementById('tabClips').classList.toggle('active', m==='clips');
+  document.getElementById('camWrap').style.display  = (m==='log'||m==='clips')?'none':'block';
   document.getElementById('faceGuide').style.display= m==='register'?'block':'none';
-  if (m==='log') renderShiftLog();
+  if (m==='log')   renderShiftLog();
+  if (m==='clips') renderClips();
 }
 
 function toggleOvr(key) {
@@ -444,12 +488,20 @@ async function startCamera() {
     video.srcObject=stream; await video.play();
     canvas.width=video.videoWidth||640; canvas.height=video.videoHeight||480;
     if (mode==='detect') {
-      // Reset session counters on each new camera start
+      // Reset session counters
       liftCount=0; liftState='idle';
       ppeStatus.helmet=null; ppeStatus.vest=null;
       const lc=document.getElementById('liftCountNum'); if(lc) lc.textContent='0';
       updatePPEDisplay();
+      // Hide video element — canvas will draw the feed + overlays (needed for recording)
+      video.style.visibility='hidden';
+      // Init canvas stream for recording (one stream for the whole session)
+      if (canvas.captureStream) {
+        canvasStream = canvas.captureStream(10);  // 10fps for recording
+      }
       startDetectLoop();
+    } else {
+      video.style.visibility='visible';
     }
     setStatus('ready', mode==='register'?STEPS[currentStep].text:'Detecting...');
   } catch(e) { setStatus('error','Camera access denied: '+e.message); }
@@ -459,10 +511,14 @@ function stopCamera() {
   clearInterval(detectIntvl); detectIntvl=null;
   clearInterval(poseIntvl);   poseIntvl=null;
   clearInterval(exitIntvl);   exitIntvl=null;
+  if (eventRecorder && eventRecorder.state==='recording') eventRecorder.stop();
+  canvasStream=null;
   stream?.getTracks().forEach(t=>t.stop()); stream=null;
   mpPoseLandmarks=null;
+  video.style.visibility='visible';
   ctx.clearRect(0,0,canvas.width,canvas.height);
   hideAlert();
+  setRecordingUI(false);
 }
 
 // ── Register: capture step ─────────────────────────────────
@@ -600,7 +656,9 @@ async function runFaceDetection() {
     const now=Date.now();
     // Only alert if unknown AND no known person in same frame AND 15s cooldown
     if (unknowns>0 && known===0 && now-lastAlertTime>15000) {
-      lastAlertTime=now; showAlert(); addShiftLog(`⚠️ ${unknowns} UNKNOWN person(s) detected!`,'unknown');
+      lastAlertTime=now; showAlert();
+      addShiftLog(`⚠️ ${unknowns} UNKNOWN person(s) detected!`,'unknown');
+      triggerCapture('⚠️ Unknown Person', `${unknowns} unregistered person(s)`);
     } else if (unknowns===0 || known>0) hideAlert();
   } catch(e){ console.warn('Face detect err:',e); }
 }
@@ -618,8 +676,13 @@ function drawFrameOnly() {
 }
 
 function drawFrame() {
-  canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+  // Only resize canvas when dimensions change (avoids disrupting canvasStream)
+  if (canvas.width!==video.videoWidth||canvas.height!==video.videoHeight) {
+    canvas.width=video.videoWidth||640; canvas.height=video.videoHeight||480;
+  }
   ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Draw video frame as background (enables recording of annotated feed)
+  if (mode==='detect') ctx.drawImage(video,0,0);
 
   // 1. MediaPipe skeleton
   if (mpPoseLandmarks && overlays.skeleton) {
@@ -686,6 +749,7 @@ function checkPockets(lm) {
         if (now-lastPocketAlert>10000) {
           lastPocketAlert=now;
           addShiftLog(`🚨 Hand in pocket zone — ${side==='L'?'Left':'Right'} side!`,'unknown');
+          triggerCapture('🚨 Pocket Detected', `Hand in ${side==='L'?'left':'right'} pocket`);
         }
       }
     } else {
@@ -845,6 +909,7 @@ function checkPPE(lm) {
     if(now-lastPPEAlert>30000){
       lastPPEAlert=now;
       addShiftLog(`🪖 PPE violation: ${issues.join(', ')}!`,'unknown');
+      triggerCapture('🪖 PPE Violation', issues.join(', '));
     }
   }
 
@@ -857,6 +922,103 @@ function updatePPEDisplay() {
   const v=document.getElementById('vestStatus');
   if(h) h.textContent=fmt(ppeStatus.helmet);
   if(v) v.textContent=fmt(ppeStatus.vest);
+}
+
+// ── Smart Recording ─────────────────────────────────────────
+function triggerCapture(eventType, label) {
+  const now = Date.now();
+  // Cooldown: same event type won't retrigger for 30s
+  if (captureCooldowns[eventType] && now - captureCooldowns[eventType] < CLIP_COOLDOWN_MS) return;
+  captureCooldowns[eventType] = now;
+
+  // 1. Screenshot (instant)
+  canvas.toBlob(blob => {
+    if (!blob) return;
+    _addClip({type:'screenshot', trigger:eventType, label, timestamp:new Date(), blob});
+  }, 'image/jpeg', 0.88);
+
+  // 2. Video clip (45 seconds)
+  if (canvasStream && !eventRecording) {
+    const mimeType = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']
+                     .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+    try {
+      const recorder = new MediaRecorder(canvasStream, {mimeType, videoBitsPerSecond: 800000});
+      const chunks = [];
+      recorder.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        eventRecording = false; eventRecorder = null;
+        setRecordingUI(false);
+        if (chunks.length) {
+          _addClip({type:'video', trigger:eventType, label, timestamp:new Date(),
+                    blob: new Blob(chunks, {type:mimeType}),
+                    duration: Math.round(CLIP_DURATION_MS/1000)});
+        }
+      };
+      recorder.start(1000);
+      setTimeout(() => { if(recorder.state==='recording') recorder.stop(); }, CLIP_DURATION_MS);
+      eventRecorder = recorder;
+      eventRecording = true;
+      setRecordingUI(true);
+    } catch(e) { console.warn('Recording not supported:', e); }
+  }
+}
+
+function _addClip(clip) {
+  clip.id  = Date.now() + Math.random();
+  clip.url = URL.createObjectURL(clip.blob);
+  savedClips.unshift(clip);
+  // Keep max 20 clips — revoke oldest URL to free memory
+  while (savedClips.length > MAX_CLIPS) {
+    const old = savedClips.pop();
+    URL.revokeObjectURL(old.url);
+  }
+  _updateClipsCount();
+  if (mode === 'clips') renderClips();
+}
+
+function setRecordingUI(active) {
+  eventRecording = active;
+  const st = document.getElementById('recStatus');
+  const cr = document.getElementById('recCorner');
+  if (st) st.className = active ? 'active' : '';
+  if (cr) cr.style.display = active ? 'block' : 'none';
+}
+
+function _updateClipsCount() {
+  const el = document.getElementById('clipsCount');
+  if (el) el.textContent = savedClips.length;
+}
+
+function renderClips() {
+  const el = document.getElementById('clipsList');
+  if (!el) return;
+  _updateClipsCount();
+  if (!savedClips.length) {
+    el.innerHTML = '<div style="padding:14px;font-size:12px;color:#475569;text-align:center">No clips yet — events are recorded automatically during detection</div>';
+    return;
+  }
+  el.innerHTML = savedClips.map(c => {
+    const isVid = c.type === 'video';
+    const color = isVid ? '#60a5fa' : '#f59e0b';
+    const ext   = isVid ? 'webm' : 'jpg';
+    const fname = `${c.trigger.replace(/[^a-z0-9]/gi,'_')}_${c.timestamp.getTime()}.${ext}`;
+    return `<div class="clip-row">
+      <div class="clip-icon">${isVid ? '📹' : '📸'}</div>
+      <div class="clip-info">
+        <div class="clip-trigger" style="color:${color}">${c.trigger}</div>
+        <div class="clip-meta">${c.timestamp.toLocaleTimeString()}${c.duration?' · '+c.duration+'s':''} · ${isVid?'Video clip':'Screenshot'}</div>
+      </div>
+      <a href="${c.url}" download="${fname}" class="btn-save">⬇ Save</a>
+    </div>`;
+  }).join('');
+}
+
+function clearClips() {
+  if (!confirm('Delete all clips?')) return;
+  savedClips.forEach(c => URL.revokeObjectURL(c.url));
+  savedClips = [];
+  _updateClipsCount();
+  renderClips();
 }
 
 // Tiny PPE status badges drawn on the canvas (top-right corner)

@@ -150,11 +150,12 @@
 
   <div id="alertBanner">⚠️ UNKNOWN PERSON DETECTED — Not registered in the system!</div>
 
-  <div class="tabs">
+  <div class="tabs" style="flex-wrap:wrap">
     <button class="tab active" id="tabReg"   onclick="switchMode('register')">👤 Register</button>
-    <button class="tab"        id="tabDet"   onclick="switchMode('detect')">🔍 Detection</button>
-    <button class="tab"        id="tabLog"   onclick="switchMode('log')">📋 Shift Log</button>
+    <button class="tab"        id="tabDet"   onclick="switchMode('detect')">🔍 Detect</button>
+    <button class="tab"        id="tabLog"   onclick="switchMode('log')">📋 Log</button>
     <button class="tab"        id="tabClips" onclick="switchMode('clips')">📹 Clips <span id="clipsCount" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:3px">0</span></button>
+    <button class="tab"        id="tabAna"   onclick="switchMode('analytics')">📊 Stats</button>
   </div>
 
   <div class="layout">
@@ -275,6 +276,50 @@
         </div>
       </div>
 
+      <!-- ANALYTICS panel -->
+      <div class="panel" id="panelAnalytics" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:11px;color:#64748b;text-transform:uppercase">Shift Duration</div>
+            <div style="font-size:20px;font-weight:800;color:#60a5fa" id="anaShiftDur">—</div>
+          </div>
+          <button class="btn btn-blue" style="width:auto;padding:8px 16px" onclick="exportCSV()">⬇ Export CSV</button>
+        </div>
+
+        <div style="background:#0f172a;border-radius:10px;padding:14px">
+          <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;margin-bottom:12px">PPE Compliance</div>
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+              <span style="font-size:13px;font-weight:600">🪖 Helmet</span>
+              <span id="anaPctHelmet" style="font-weight:800;color:#64748b">—</span>
+            </div>
+            <div style="height:10px;background:#334155;border-radius:5px;overflow:hidden">
+              <div id="anaBarHelmet" style="height:100%;background:#22c55e;width:0%;transition:width .6s,background .4s"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+              <span style="font-size:13px;font-weight:600">🦺 Vest</span>
+              <span id="anaPctVest" style="font-weight:800;color:#64748b">—</span>
+            </div>
+            <div style="height:10px;background:#334155;border-radius:5px;overflow:hidden">
+              <div id="anaBarVest" style="height:100%;background:#22c55e;width:0%;transition:width .6s,background .4s"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="counters">
+          <div class="card"><div class="num red" id="anaIncPocket">0</div><div class="lbl">🚨 Pocket</div></div>
+          <div class="card"><div class="num red" id="anaIncUnknown">0</div><div class="lbl">⚠️ Unknown</div></div>
+          <div class="card"><div class="num" style="color:#a78bfa" id="anaIncPPE">0</div><div class="lbl">🪖 PPE Viol.</div></div>
+        </div>
+
+        <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600">Worker Attendance</div>
+        <div id="anaWorkers" style="max-height:220px;overflow-y:auto;background:#0f172a;border-radius:10px">
+          <div style="padding:14px;font-size:12px;color:#475569;text-align:center">Start detection to track attendance</div>
+        </div>
+      </div>
+
     </div>
 
     <!-- SIDEBAR -->
@@ -302,7 +347,7 @@
 <script>
 // ── Config ─────────────────────────────────────────────────
 const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
-const FACE_THRESHOLD = 0.62;
+const FACE_THRESHOLD = 0.68;  // raised: more tolerant of angle/expression changes
 const EXIT_TIMEOUT   = 12000;
 
 const STEPS = [
@@ -340,9 +385,11 @@ let capturedDesc   = [];
 let registeredFaces  = [];
 let activeSessions   = {};
 let shiftLog         = [];
-let lastAlertTime    = 0;
-let lastFaceRun      = 0;
-let cachedFaceResult = [];
+let lastAlertTime      = 0;
+let lastFaceRun        = 0;
+let cachedFaceResult   = [];
+let consecutiveUnknown = 0;   // require N unknowns before alerting
+let capturedColors     = [];  // clothing colors captured during registration
 let mpPoseLandmarks  = null;
 let capturing        = false;
 let mpPose           = null;
@@ -364,6 +411,11 @@ const ppeStatus  = { helmet: null, vest: null };  // null=scanning, true=ok, fal
 let lastPPECheck = 0;
 let lastPPEAlert = 0;
 let offCtx       = null;   // offscreen canvas context for pixel sampling
+
+// ── Analytics tracking ──────────────────────────────────────
+const ppeTracking  = { checks:0, helmetOk:0, vestOk:0 };
+let sessionStart   = null;    // when detect mode started
+let sessionHistory = [];      // completed sessions
 
 // ── Smart Recording ─────────────────────────────────────────
 const CLIP_DURATION_MS  = 45000;  // 45 seconds video after event
@@ -453,15 +505,18 @@ function switchMode(m) {
   document.getElementById('panelRegister').style.display = m==='register'?'flex':'none';
   document.getElementById('panelDetect').style.display   = m==='detect'  ?'flex':'none';
   document.getElementById('panelLog').style.display      = m==='log'     ?'flex':'none';
-  document.getElementById('panelClips').style.display    = m==='clips'   ?'flex':'none';
+  document.getElementById('panelClips').style.display     = m==='clips'    ?'flex':'none';
+  document.getElementById('panelAnalytics').style.display = m==='analytics' ?'flex':'none';
   document.getElementById('tabReg').classList.toggle('active',   m==='register');
   document.getElementById('tabDet').classList.toggle('active',   m==='detect');
   document.getElementById('tabLog').classList.toggle('active',   m==='log');
   document.getElementById('tabClips').classList.toggle('active', m==='clips');
-  document.getElementById('camWrap').style.display  = (m==='log'||m==='clips')?'none':'block';
+  document.getElementById('tabAna').classList.toggle('active',   m==='analytics');
+  document.getElementById('camWrap').style.display  = (m==='log'||m==='clips'||m==='analytics')?'none':'block';
   document.getElementById('faceGuide').style.display= m==='register'?'block':'none';
-  if (m==='log')   renderShiftLog();
-  if (m==='clips') renderClips();
+  if (m==='log')       renderShiftLog();
+  if (m==='clips')     renderClips();
+  if (m==='analytics') renderAnalytics();
 }
 
 function toggleOvr(key) {
@@ -510,6 +565,8 @@ async function startCamera() {
       // Reset session counters
       liftCount=0; liftState='idle';
       ppeStatus.helmet=null; ppeStatus.vest=null;
+      ppeTracking.checks=0; ppeTracking.helmetOk=0; ppeTracking.vestOk=0;
+      sessionStart=Date.now(); sessionHistory=[];
       const lc=document.getElementById('liftCountNum'); if(lc) lc.textContent='0';
       updatePPEDisplay();
       // Hide video element — canvas will draw the feed + overlays (needed for recording)
@@ -579,6 +636,8 @@ async function captureStep() {
   setTimeout(()=>ctx.clearRect(0,0,canvas.width,canvas.height),900);
 
   capturedDesc.push(det.descriptor);
+  // Capture clothing color from shirt region (below face box)
+  capturedColors.push(_sampleClothingFromBox(det.detection.box));
   document.getElementById(`step${currentStep}`).className='step done';
   currentStep++;
 
@@ -592,8 +651,8 @@ async function captureStep() {
     document.getElementById('captureProgressBar').style.width='100%';
     document.getElementById('btnCapture').disabled=true;
     const ex=registeredFaces.find(f=>f.code===code);
-    if (ex){ ex.descriptors.push(...capturedDesc); ex.name=name; }
-    else registeredFaces.push({name,code,descriptors:[...capturedDesc]});
+    if (ex){ ex.descriptors.push(...capturedDesc); ex.name=name; ex.clothingColors=[...capturedColors]; }
+    else registeredFaces.push({name,code,descriptors:[...capturedDesc],clothingColors:[...capturedColors]});
     saveData(); renderPeopleList();
     addShiftLog(`✅ Registered: ${name} (${code})`, 'entry');
     setStatus('ready',`✅ ${name} (${code}) registered successfully!`);
@@ -604,7 +663,7 @@ async function captureStep() {
 }
 
 function resetCapture(){
-  currentStep=0; capturedDesc=[];
+  currentStep=0; capturedDesc=[]; capturedColors=[];
   STEPS.forEach((_,i)=>{ document.getElementById(`step${i}`).className=i===0?'step active':'step'; });
   document.getElementById('stepInstruction').textContent=STEPS[0].text;
   document.getElementById('captureProgressBar').style.width='0%';
@@ -636,49 +695,75 @@ function startDetectLoop() {
 // Face detection (slow, cached)
 async function runFaceDetection() {
   if (!stream||!video.videoWidth||!faceReady) return;
+  // Throttle to 3s when recording to free CPU for the encoder
+  if (eventRecording && Date.now()-lastFaceRun < 3000) return;
+  lastFaceRun = Date.now();
   try {
     const dets = await faceapi
       .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({scoreThreshold:0.3,inputSize:320}))
       .withFaceLandmarks(true).withFaceDescriptors();
     cachedFaceResult = dets;
 
-    // Update sessions
-    if (dets.length>0 && registeredFaces.length>0) {
+    const now = Date.now();
+    let matcher = null;
+    if (registeredFaces.length>0) {
       const labeled = registeredFaces.map(f=>
         new faceapi.LabeledFaceDescriptors(`${f.name}||${f.code}`, f.descriptors));
-      const matcher = new faceapi.FaceMatcher(labeled, FACE_THRESHOLD);
-      const now = Date.now();
-      dets.forEach(det=>{
-        const match=matcher.findBestMatch(det.descriptor);
-        if (match.label!=='unknown') {
-          const [name,code]=match.label.split('||');
-          if (!activeSessions[code]) {
-            activeSessions[code]={name,code,enteredAt:now,lastSeen:now};
-            addShiftLog(`🟢 Entry: ${name} (${code})`,'entry');
-            renderActiveSessions();
-          } else { activeSessions[code].lastSeen=now; }
-        }
-      });
+      matcher = new faceapi.FaceMatcher(labeled, FACE_THRESHOLD);
     }
 
-    // Unknown alert — only fire if ALL faces are unknown (not when briefly losing a known face)
-    const knownLabels = registeredFaces.length>0
-      ? new faceapi.FaceMatcher(registeredFaces.map(f=>
-          new faceapi.LabeledFaceDescriptors(`${f.name}||${f.code}`,f.descriptors)),FACE_THRESHOLD)
-      : null;
-    const unknowns = knownLabels
-      ? dets.filter(d=>knownLabels.findBestMatch(d.descriptor).label==='unknown').length
-      : dets.length;
-    const known = dets.length - unknowns;
+    // Update sessions for recognized faces
+    dets.forEach(det=>{
+      if (!matcher) return;
+      const match = matcher.findBestMatch(det.descriptor);
+      if (match.label !== 'unknown') {
+        const [name,code] = match.label.split('||');
+        if (!activeSessions[code]) {
+          activeSessions[code]={name,code,enteredAt:now,lastSeen:now};
+          addShiftLog(`🟢 Entry: ${name} (${code})`,'entry');
+          renderActiveSessions();
+        } else { activeSessions[code].lastSeen=now; }
+      } else {
+        // Face UNKNOWN — try clothing re-ID
+        const clothingMatch = _clothingReID(det.detection.box);
+        if (clothingMatch) {
+          // Recognized by clothing — update session
+          if (!activeSessions[clothingMatch.code]) {
+            activeSessions[clothingMatch.code]={name:clothingMatch.name,code:clothingMatch.code,enteredAt:now,lastSeen:now};
+            addShiftLog(`🟢 Entry: ${clothingMatch.name} (${clothingMatch.code}) 👔`,'entry');
+            renderActiveSessions();
+          } else { activeSessions[clothingMatch.code].lastSeen=now; }
+        }
+      }
+    });
+
+    // Count known vs unknown (clothing-matched count as known)
+    let unknowns=0, known=0;
+    dets.forEach(det=>{
+      if (!matcher) { unknowns++; return; }
+      const match = matcher.findBestMatch(det.descriptor);
+      if (match.label!=='unknown') { known++; }
+      else {
+        const cm = _clothingReID(det.detection.box);
+        if (cm) known++; else unknowns++;
+      }
+    });
+
     document.getElementById('numKnown').textContent   = known;
     document.getElementById('numUnknown').textContent = unknowns;
-    const now=Date.now();
-    // Only alert if unknown AND no known person in same frame AND 15s cooldown
-    if (unknowns>0 && known===0 && now-lastAlertTime>15000) {
-      lastAlertTime=now; showAlert();
-      addShiftLog(`⚠️ ${unknowns} UNKNOWN person(s) detected!`,'unknown');
-      triggerCapture('⚠️ Unknown Person', `${unknowns} unregistered person(s)`);
-    } else if (unknowns===0 || known>0) hideAlert();
+
+    // Require 3 consecutive UNKNOWN detections before alerting (prevents false alarms)
+    if (unknowns>0 && known===0) {
+      consecutiveUnknown++;
+      if (consecutiveUnknown>=3 && now-lastAlertTime>15000) {
+        lastAlertTime=now; showAlert();
+        addShiftLog(`⚠️ ${unknowns} UNKNOWN person(s) detected!`,'unknown');
+        triggerCapture('⚠️ Unknown Person', `${unknowns} unregistered person(s)`);
+      }
+    } else {
+      consecutiveUnknown=0;
+      if (unknowns===0||known>0) hideAlert();
+    }
   } catch(e){ console.warn('Face detect err:',e); }
 }
 
@@ -867,6 +952,59 @@ function _roundRect(x,y,w,h,r) {
   }
 }
 
+// ── Clothing re-ID helpers ──────────────────────────────────
+function _sampleClothingFromBox(faceBox) {
+  // Sample shirt region: below the face box, same width, 70% of face height
+  const sx = Math.max(0, faceBox.x);
+  const sy = Math.max(0, faceBox.y + faceBox.height);
+  const sw = Math.min(faceBox.width, video.videoWidth - sx);
+  const sh = Math.min(faceBox.height * 0.7, video.videoHeight - sy);
+  if (sw<10||sh<10) return [0,0,0];
+
+  const tc = document.createElement('canvas');
+  tc.width = video.videoWidth; tc.height = video.videoHeight;
+  tc.getContext('2d').drawImage(video,0,0);
+  let data;
+  try { data = tc.getContext('2d').getImageData(Math.round(sx),Math.round(sy),Math.round(sw),Math.round(sh)).data; }
+  catch(e) { return [0,0,0]; }
+
+  let hSum=0,sSum=0,vSum=0,cnt=0;
+  for(let i=0;i<data.length;i+=16){
+    const {h,s,v}=rgbToHsv(data[i],data[i+1],data[i+2]);
+    hSum+=h; sSum+=s; vSum+=v; cnt++;
+  }
+  return cnt>0 ? [hSum/cnt,sSum/cnt,vSum/cnt] : [0,0,0];
+}
+
+function _clothingDistance(c1, c2) {
+  // Hue is circular (0-360), use minimum arc distance
+  const dH = Math.min(Math.abs(c1[0]-c2[0]), 360-Math.abs(c1[0]-c2[0])) / 180;
+  const dS = Math.abs(c1[1]-c2[1]);
+  const dV = Math.abs(c1[2]-c2[2]);
+  return dH*0.5 + dS*0.3 + dV*0.2;
+}
+
+function _clothingReID(faceBox) {
+  if (!registeredFaces.length||!video.videoWidth) return null;
+  const current = _sampleClothingFromBox(faceBox);
+  if (!current||current[2]<0.1) return null;  // too dark to read
+
+  let bestPerson=null, bestDist=Infinity;
+  registeredFaces.forEach(person=>{
+    if (!person.clothingColors||!person.clothingColors.length) return;
+    // Average clothing color across all captured samples
+    const avg = person.clothingColors.reduce(
+      (acc,c)=>[acc[0]+c[0]/person.clothingColors.length,
+                acc[1]+c[1]/person.clothingColors.length,
+                acc[2]+c[2]/person.clothingColors.length], [0,0,0]);
+    const dist = _clothingDistance(current, avg);
+    if (dist<bestDist){ bestDist=dist; bestPerson=person; }
+  });
+
+  // Match if color distance < 0.22 (close enough in hue/saturation)
+  return bestDist<0.22 ? bestPerson : null;
+}
+
 // ── PPE check (helmet + safety vest, color-based) ──────────
 function rgbToHsv(r,g,b) {
   r/=255; g/=255; b/=255;
@@ -904,7 +1042,7 @@ function _sampleRatio(data,W,H,rx,ry,rw,rh) {
 
 function checkPPE(lm) {
   const now=Date.now();
-  if(now-lastPPECheck<2000) return;  // run every 2s
+  if(now-lastPPECheck < (eventRecording?5000:2000)) return;  // slower when recording
   lastPPECheck=now;
   if(!video.videoWidth||!stream) return;
 
@@ -953,6 +1091,13 @@ function checkPPE(lm) {
       addShiftLog(`🪖 PPE violation: ${issues.join(', ')}!`,'unknown');
       triggerCapture('🪖 PPE Violation', issues.join(', '));
     }
+  }
+
+  // Track compliance stats
+  if(ppeStatus.helmet!==null||ppeStatus.vest!==null){
+    ppeTracking.checks++;
+    if(ppeStatus.helmet===true) ppeTracking.helmetOk++;
+    if(ppeStatus.vest===true)   ppeTracking.vestOk++;
   }
 
   updatePPEDisplay();
@@ -1063,6 +1208,93 @@ function clearClips() {
   renderClips();
 }
 
+// ── Analytics ───────────────────────────────────────────────
+function renderAnalytics() {
+  const el = id => document.getElementById(id);
+
+  // Shift duration
+  if(el('anaShiftDur')) el('anaShiftDur').textContent = sessionStart ? formatDur(Date.now()-sessionStart) : '—';
+
+  // PPE compliance bars
+  const {checks, helmetOk, vestOk} = ppeTracking;
+  function setPct(pctId, barId, ok, total) {
+    if(!el(pctId)) return;
+    if(!total){ el(pctId).textContent='—'; el(pctId).style.color='#64748b'; return; }
+    const pct = Math.round(ok/total*100);
+    const color = pct>=80?'#22c55e':pct>=50?'#f59e0b':'#ef4444';
+    el(pctId).textContent = pct+'%';
+    el(pctId).style.color = color;
+    if(el(barId)){ el(barId).style.width=pct+'%'; el(barId).style.background=color; }
+  }
+  setPct('anaPctHelmet','anaBarHelmet', helmetOk, checks);
+  setPct('anaPctVest',  'anaBarVest',   vestOk,   checks);
+
+  // Incident counters
+  const n = (fn) => shiftLog.filter(fn).length;
+  if(el('anaIncPocket'))  el('anaIncPocket').textContent  = n(e=>e.msg.includes('Pocket'));
+  if(el('anaIncUnknown')) el('anaIncUnknown').textContent = n(e=>e.msg.includes('UNKNOWN'));
+  if(el('anaIncPPE'))     el('anaIncPPE').textContent     = n(e=>e.msg.includes('PPE violation'));
+
+  // Worker attendance table
+  const now = Date.now();
+  const allSessions = [
+    ...Object.values(activeSessions).map(s=>({...s,active:true})),
+    ...sessionHistory.map(s=>({...s,active:false}))
+  ].sort((a,b)=>a.enteredAt-b.enteredAt);
+
+  const wEl = el('anaWorkers');
+  if(wEl){
+    if(!allSessions.length){
+      wEl.innerHTML='<div style="padding:14px;font-size:12px;color:#475569;text-align:center">No attendance data yet</div>';
+    } else {
+      wEl.innerHTML = allSessions.map(s=>{
+        const dur = formatDur((s.active?now:s.exitedAt)-s.enteredAt);
+        const badge = s.active
+          ? '<span style="background:#14532d;color:#22c55e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">ACTIVE</span>'
+          : '<span style="background:#1a2332;color:#475569;padding:2px 8px;border-radius:10px;font-size:10px">LEFT</span>';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #1a2332">
+          <div style="width:34px;height:34px;border-radius:50%;background:#334155;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#94a3b8">${s.name.charAt(0).toUpperCase()}</div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600">${s.name} <span style="color:#64748b;font-size:11px">${s.code}</span></div>
+            <div style="font-size:11px;color:#64748b">In: ${new Date(s.enteredAt).toLocaleTimeString()} · ${dur}</div>
+          </div>
+          ${badge}
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
+function exportCSV() {
+  const now  = new Date();
+  const date = now.toLocaleDateString().replace(/\//g,'-');
+  const {checks,helmetOk,vestOk} = ppeTracking;
+  const hPct = checks>0 ? Math.round(helmetOk/checks*100)+'%' : '—';
+  const vPct = checks>0 ? Math.round(vestOk/checks*100)+'%'   : '—';
+
+  const rows = [
+    ['WMS Guard — Shift Report'],
+    ['Date', now.toLocaleDateString(), 'Time', now.toLocaleTimeString()],
+    ['Shift Duration', sessionStart?formatDur(Date.now()-sessionStart):'—'],
+    ['Total Lifts', liftCount],
+    ['Helmet Compliance', hPct],
+    ['Vest Compliance', vPct],
+    [],
+    ['TIME','EVENT','TYPE'],
+    ...shiftLog.map(e=>[e.time, '"'+e.msg.replace(/"/g,"'")+'"', e.type])
+  ];
+
+  const csv = '﻿' + rows.map(r=>r.join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href=url; a.download=`shift_report_${date}.csv`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  addShiftLog('📊 Shift report exported','entry');
+}
+
 // Tiny PPE status badges drawn on the canvas (top-right corner)
 function drawPPECorner() {
   if(ppeStatus.helmet===null && ppeStatus.vest===null) return;
@@ -1136,8 +1368,14 @@ function drawFaceResults(dets) {
         label=`${name}  ${code}  ${Math.round((1-m.distance)*100)}%`;
         isKnown=true;
       } else {
-        // Show distance for debugging — helps tune threshold
-        label=`UNKNOWN  dist:${m.distance.toFixed(2)}`;
+        // Face unclear — try clothing re-ID
+        const cm = _clothingReID(box);
+        if (cm) {
+          label=`👔 ${cm.name}  ${cm.code}`;
+          isKnown=true;
+        } else {
+          label=`UNKNOWN  dist:${m.distance.toFixed(2)}`;
+        }
       }
     }
     const color=isKnown?'#22c55e':'#ef4444';
@@ -1158,6 +1396,7 @@ function checkExits() {
     const s=activeSessions[code];
     if (now-s.lastSeen>EXIT_TIMEOUT) {
       addShiftLog(`🔴 Exit: ${s.name} (${code}) — ${formatDur(s.lastSeen-s.enteredAt)}`,'exit');
+      sessionHistory.push({...s, exitedAt: s.lastSeen});
       delete activeSessions[code]; renderActiveSessions();
     }
   });
@@ -1222,7 +1461,11 @@ function deletePerson(i){if(!confirm(`Delete ${registeredFaces[i].name}?`))retur
 // ── Storage (with v2 migration) ────────────────────────────
 function saveData(){
   localStorage.setItem('wms_faces_v3',JSON.stringify(
-    registeredFaces.map(f=>({name:f.name,code:f.code,descriptors:f.descriptors.map(d=>Array.from(d))}))));
+    registeredFaces.map(f=>({
+      name:f.name, code:f.code,
+      descriptors:f.descriptors.map(d=>Array.from(d)),
+      clothingColors: f.clothingColors||[]
+    }))));
   localStorage.setItem('wms_log_v3',JSON.stringify(shiftLog.slice(0,100)));
 }
 function loadData(){
@@ -1230,7 +1473,10 @@ function loadData(){
     let raw=localStorage.getItem('wms_faces_v3')||localStorage.getItem('wms_faces_v2');
     if(raw){
       registeredFaces=JSON.parse(raw).map(x=>({
-        name:x.name,code:x.code,descriptors:x.descriptors.map(d=>new Float32Array(d))}));
+        name:x.name, code:x.code,
+        descriptors:x.descriptors.map(d=>new Float32Array(d)),
+        clothingColors: x.clothingColors||[]
+      }));
       if(!localStorage.getItem('wms_faces_v3'))saveData();
       renderPeopleList();
     }
